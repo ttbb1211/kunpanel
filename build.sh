@@ -7,10 +7,16 @@ set -e
 cd "$(dirname "$0")"
 
 VERSION="${1:-v1.0.0}"
+# 第二个参数:发布仓库(owner/repo)。用 fork 自行发布时必须传,否则面板的
+# 「一键更新」会去上游找 Release,把自己的修复覆盖掉。
+REPO="${2:-}"
 OUT="release"
 LDFLAGS="-s -w -X main.version=${VERSION}"
+if [[ -n "$REPO" ]]; then
+  LDFLAGS="$LDFLAGS -X kunpanel/internal/panelupdate.Repo=${REPO}"
+fi
 
-echo "==> 构建坤面板 ${VERSION}"
+echo "==> 构建坤面板 ${VERSION}${REPO:+ (发布源 ${REPO})}"
 
 TARGETS=(
   "linux/amd64"
@@ -55,4 +61,10 @@ done
 echo "==> 完成,产物清单:"
 ls -lh "$OUT" | grep -v '^total' | awk '{print "  " $NF "  (" $5 ")"}'
 echo "==> 校验和:"
-( cd "$OUT" && rm -f SHA256SUMS && shasum -a 256 ./kunpanel_*.tar.gz ./kunpanel_*.zip > SHA256SUMS && cat SHA256SUMS )
+# macOS 用 shasum,Linux 用 sha256sum;两者输出格式一致(<hash>  ./<name>)
+( cd "$OUT" && rm -f SHA256SUMS && \
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum ./kunpanel_*.tar.gz ./kunpanel_*.zip > SHA256SUMS
+  else
+    shasum -a 256 ./kunpanel_*.tar.gz ./kunpanel_*.zip > SHA256SUMS
+  fi && cat SHA256SUMS )

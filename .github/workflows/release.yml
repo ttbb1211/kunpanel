@@ -1,0 +1,39 @@
+name: Release
+
+# 推 v* 标签即自动出全套安装包并建 Release。
+# 资产命名与 build.sh 一致(kunpanel_<版本>_<os>_<arch>.tar.gz + 无版本副本 + SHA256SUMS),
+# 面板的「一键更新」正是按这套命名去 Releases 里取的。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 编译并打包(发布源指向本仓库)
+        run: |
+          chmod +x build.sh
+          bash build.sh "${GITHUB_REF_NAME}" "${GITHUB_REPOSITORY}"
+
+      - name: 校验产物
+        run: |
+          ls -lh release/
+          test -f release/SHA256SUMS
+          ( cd release && sha256sum -c SHA256SUMS )
+
+      - name: 创建 Release 并上传资产
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
