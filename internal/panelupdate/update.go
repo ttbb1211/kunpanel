@@ -262,7 +262,9 @@ func (e *httpStatusError) retryable() bool {
 }
 
 func download(url string, dst string, w io.Writer) error {
-	client := &http.Client{Timeout: 15 * time.Minute}
+	// 安装包约 6 MB,15 分钟的超时对 6 次重试来说上界太长(极端挂起最坏 3 小时),
+	// 收紧到 3 分钟:即便每次直连+代理都挂起,总耗时也收敛在 ~40 分钟内。
+	client := &http.Client{Timeout: 3 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil || resp.StatusCode != 200 {
 		// 直连失败走加速代理重试一次
