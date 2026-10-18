@@ -25,7 +25,9 @@ import (
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 
-const Repo = "kungec/kunpanel"
+// Repo 发布仓库(owner/repo)。默认跟随上游,用 fork 自行发布时在构建时覆盖:
+//   -ldflags "-X kunpanel/internal/panelupdate.Repo=ttbb1211/kunpanel"
+var Repo = "kungec/kunpanel"
 
 var (
 	mu       sync.Mutex
@@ -176,7 +178,7 @@ func Semver(v string) ([3]int, bool) {
 // checksumsURL 校验和清单获取地址:直连 GitHub 优先,失败回退 gh-proxy
 // (经代理的校验和只能防传输损坏,供应链信任弱于直连——响应中会标记来源)
 func checksumsURLs(tag string) []string {
-	u := "https://github.com/kungec/kunpanel/releases/download/" + tag + "/SHA256SUMS"
+	u := "https://github.com/" + Repo + "/releases/download/" + tag + "/SHA256SUMS"
 	return []string{u, "https://gh-proxy.com/" + u}
 }
 
@@ -234,6 +236,31 @@ func directGet(url string) (string, error) {
 	return string(b), nil
 }
 
+// httpStatusError 下载返回非 200 时的错误,便于上层判断是否值得重试
+type httpStatusError struct {
+	code int
+	via  string
+}
+
+func (e *httpStatusError) Error() string {
+	if e.via != "" {
+		return fmt.Sprintf("HTTP %d(经%s)", e.code, e.via)
+	}
+	return fmt.Sprintf("HTTP %d", e.code)
+}
+
+// retryable 资产尚未就绪(404)/限流(429)/网关抖动(5xx)值得稍后重试。
+// GitHub Release 发布后安装包是逐个上传的,刚发布就点更新必然撞 404。
+func (e *httpStatusError) retryable() bool {
+	switch e.code {
+	case http.StatusNotFound, http.StatusTooManyRequests,
+		http.StatusRequestTimeout, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return e.code >= 500
+}
+
 func download(url string, dst string, w io.Writer) error {
 	client := &http.Client{Timeout: 15 * time.Minute}
 	resp, err := client.Get(url)
@@ -242,13 +269,19 @@ func download(url string, dst string, w io.Writer) error {
 		if resp != nil {
 			resp.Body.Close()
 		}
-		fmt.Fprintln(w, "直连失败,尝试加速代理 ...")
+		if err != nil {
+			fmt.Fprintf(w, "直连失败(%v),尝试加速代理 ...\n", err)
+		} else {
+			fmt.Fprintf(w, "直连返回 HTTP %d,尝试加速代理 ...\n", resp.StatusCode)
+		}
 		resp, err = client.Get("https://gh-proxy.com/" + url)
 		if err != nil {
-			return fmt.Errorf("下载失败: %v", err)
+			return fmt.Errorf("下载失败(直连与加速代理均不可用): %v", err)
 		}
 		if resp.StatusCode != 200 {
-			return fmt.Errorf("下载失败: HTTP %d", resp.StatusCode)
+			code := resp.StatusCode
+			resp.Body.Close()
+			return &httpStatusError{code: code, via: "加速代理"}
 		}
 	}
 	defer resp.Body.Close()
@@ -268,6 +301,33 @@ func download(url string, dst string, w io.Writer) error {
 	return nil
 }
 
+// downloadWithRetry 带重试的下载。
+// GitHub Release 发布后各平台安装包是逐个上传的(实测 v2.84.0:Release 21:00:32 发布,
+// arm64 资产 21:01:14 才就绪),在这段时间点「一键更新」,直连与加速代理都会返回 404。
+// 这里自动等待重试,而不是直接把一句 HTTP 404 甩给用户。
+func downloadWithRetry(url, dst string, w io.Writer) error {
+	const maxAttempts = 6
+	const wait = 10 * time.Second
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		lastErr = download(url, dst, w)
+		if lastErr == nil {
+			return nil
+		}
+		se, ok := lastErr.(*httpStatusError)
+		if !ok || !se.retryable() || attempt == maxAttempts {
+			break
+		}
+		fmt.Fprintf(w, "第 %d/%d 次下载失败(%v),%s 后重试 —— Release 刚发布时安装包可能仍在上传\n",
+			attempt, maxAttempts, lastErr, wait)
+		time.Sleep(wait)
+	}
+	if se, ok := lastErr.(*httpStatusError); ok && se.code == http.StatusNotFound {
+		return fmt.Errorf("安装包尚不存在(HTTP 404):该 Release 可能刚发布、各平台资产仍在上传,请 1~2 分钟后重试;若持续 404 请确认该版本发布是否完整。地址: %s", url)
+	}
+	return lastErr
+}
+
 // Apply 下载指定版本的安装包,替换本机二进制并触发服务重启。
 // 重启通过脱离的子进程执行,面板进程先正常返回 HTTP 响应再退出。
 func Apply(tag string, w io.Writer) error {
@@ -277,7 +337,7 @@ func Apply(tag string, w io.Writer) error {
 	}
 	fmt.Fprintln(w, "下载 "+tag+" ...")
 	archive := filepath.Join(os.TempDir(), fmt.Sprintf("kunpanel_update_%d%s", time.Now().UnixNano(), map[bool]string{true: ".zip", false: ".tar.gz"}[runtime.GOOS == "windows"]))
-	if err := download(assetURL(tag), archive, w); err != nil {
+	if err := downloadWithRetry(assetURL(tag), archive, w); err != nil {
 		return err
 	}
 	defer os.Remove(archive)
