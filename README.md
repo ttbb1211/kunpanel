@@ -6,7 +6,7 @@
 
 **轻量级服务器运维管理面板 —— Go 单二进制,开箱即用**
 
-[![](https://img.shields.io/badge/版本-v2.84.1-3b82f6?style=flat-square)](https://github.com/ttbb1211/kunpanel/releases)
+[![](https://img.shields.io/badge/版本-v2.84.2-3b82f6?style=flat-square)](https://github.com/ttbb1211/kunpanel/releases)
 [![](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square)](https://golang.org)
 [![](https://img.shields.io/badge/平台-Linux%20%7C%20Windows-lightgrey?style=flat-square)](./README.md)
 [![](https://img.shields.io/badge/License-MIT-green?style=flat-square)](./LICENSE)
@@ -17,7 +17,8 @@
 ---
 
 > **本仓库是 [`kungec/kunpanel`](https://github.com/kungec/kunpanel) 的 fork**（MIT 协议，原作者版权保留）。
-> 相对上游 **v2.84.0** 的差异：
+> 代码基线已跟进上游 **v2.91.0**（2026-10-19 合并），本仓库版本号沿用自身的 `v2.84.x` 序列。
+> 相对上游的差异：
 > ① 站点配置只在模板版本升级时迁移，**不再每次重启重建 `site_*.conf`**；
 > ② 在线更新遇到 Release 资产未就绪时**自动重试**（404/429/5xx，最多 6 次 × 10s），不再直接甩 404；
 > ③ 下载超时由 15 分钟收紧到 **3 分钟**；
@@ -71,7 +72,7 @@ bash install.sh --port 20000 --username admin --password yourpwd   # 自定义�
 bash install.sh --with-docker            # 同时安装 Docker 引擎(自动配国内镜像源)
 bash install.sh --mirror aliyun          # Docker 使用阿里云镜像源
 bash install.sh --proxy https://gh-proxy.com/   # GitHub 下载加速
-bash install.sh --version v2.84.0        # 安装指定版本
+bash install.sh --version v2.84.2        # 安装指定版本
 bash install.sh --offline ./kunpanel_linux_amd64.tar.gz   # 离线安装(含 SHA-256 校验)
 bash install.sh --uninstall              # 卸载
 ```
@@ -161,7 +162,7 @@ docker run -d --name kunpanel -p 20000:20000 \
 
 ```bash
 git clone https://github.com/ttbb1211/kunpanel.git && cd kunpanel
-bash build.sh v2.84.1 ttbb1211/kunpanel     # 第二个参数 = 发布源，不传则用二进制内置默认值
+bash build.sh v2.84.2 ttbb1211/kunpanel     # 第二个参数 = 发布源，不传则用二进制内置默认值
 ```
 
 Go 1.23+,前端为原生 JS(`go:embed` 内嵌),无 Node 构建步骤。
