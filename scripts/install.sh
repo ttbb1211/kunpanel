@@ -6,7 +6,7 @@
 #  架构: x86_64(amd64) / aarch64(arm64) / armv7
 #
 #  在线安装(始终最新版):
-#    curl -fsSL https://raw.githubusercontent.com/kungec/kunpanel/main/scripts/install.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/ttbb1211/kunpanel/main/scripts/install.sh | bash
 #  可选参数:
 #    bash install.sh --port 20000 --username admin --password yourpwd
 #                    --with-docker            同时安装 Docker 引擎
@@ -31,7 +31,9 @@ KP_OFFLINE=""
 KP_UNINSTALL=false
 KP_DIR="/opt/kunpanel"
 KP_SERVICE="kunpanel"
-REPO_URL="https://github.com/kungec/kunpanel/releases/download"
+# 发布源仓库：fork 后指向自己的仓库，安装与在线更新都从这里取包
+GH_REPO="ttbb1211/kunpanel"
+REPO_URL="https://github.com/${GH_REPO}/releases/download"
 
 # ---------------- 参数解析 ----------------
 while [[ $# -gt 0 ]]; do
@@ -157,7 +159,7 @@ if [[ -n "$KP_OFFLINE" ]]; then
 else
   # latest = 直接取最新 release 的无版本产物;指定版本则用带版本产物
   if [[ "$KP_VERSION" == "latest" ]]; then
-    DL_URL="https://github.com/kungec/kunpanel/releases/latest/download/kunpanel_linux_${ARCH}.tar.gz"
+    DL_URL="https://github.com/${GH_REPO}/releases/latest/download/kunpanel_linux_${ARCH}.tar.gz"
   else
     DL_URL="$REPO_URL/$KP_VERSION/kunpanel_${KP_VERSION}_linux_${ARCH}.tar.gz"
   fi
@@ -170,7 +172,7 @@ else
   # SHA-256 校验(供应链完整性;--no-verify 或离线模式跳过)
   if [[ "${KP_NO_VERIFY:-}" != "1" ]]; then
     SUM_URL="${DL_URL%/*}/SHA256SUMS"
-    [[ "$SUM_URL" == *"/latest/download/"* ]] && SUM_URL="https://github.com/kungec/kunpanel/releases/latest/download/SHA256SUMS"
+    [[ "$SUM_URL" == *"/latest/download/"* ]] && SUM_URL="https://github.com/${GH_REPO}/releases/latest/download/SHA256SUMS"
     TMP_SUM=$(mktemp)
     SUM_SRC="${KP_PROXY:+$KP_PROXY}$SUM_URL"
     if curl -fsSL --connect-timeout 15 --retry 2 -o "$TMP_SUM" "$SUM_SRC"; then

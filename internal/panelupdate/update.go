@@ -27,7 +27,7 @@ func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 
 // Repo 发布仓库(owner/repo)。默认跟随上游,用 fork 自行发布时在构建时覆盖:
 //   -ldflags "-X kunpanel/internal/panelupdate.Repo=ttbb1211/kunpanel"
-var Repo = "kungec/kunpanel"
+var Repo = "ttbb1211/kunpanel"
 
 var (
 	mu       sync.Mutex

@@ -6,7 +6,7 @@
 
 **轻量级服务器运维管理面板 —— Go 单二进制,开箱即用**
 
-[![](https://img.shields.io/badge/版本-v2.80.0-3b82f6?style=flat-square)](https://github.com/kungec/kunpanel/releases)
+[![](https://img.shields.io/badge/版本-v2.84.1-3b82f6?style=flat-square)](https://github.com/ttbb1211/kunpanel/releases)
 [![](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square)](https://golang.org)
 [![](https://img.shields.io/badge/平台-Linux%20%7C%20Windows-lightgrey?style=flat-square)](./README.md)
 [![](https://img.shields.io/badge/License-MIT-green?style=flat-square)](./LICENSE)
@@ -20,6 +20,17 @@
 💬 交流 QQ 群:**`307386089`** —— 反馈 bug / 功能建议 / 运维经验交流
 
 </div>
+
+---
+
+> **本仓库是 [`kungec/kunpanel`](https://github.com/kungec/kunpanel) 的 fork**（MIT 协议，原作者版权保留）。
+> 相对上游 **v2.84.0** 的差异：
+> ① 站点配置只在模板版本升级时迁移，**不再每次重启重建 `site_*.conf`**；
+> ② 在线更新遇到 Release 资产未就绪时**自动重试**（404/429/5xx，最多 6 次 × 10s），不再直接甩 404；
+> ③ 下载超时由 15 分钟收紧到 **3 分钟**；
+> ④ 发布源（安装脚本、在线更新、SHA256SUMS）全部指向**本仓库**，不需要额外参数。
+>
+> 安装、升级、下载都走本仓库，命令与上游完全一致。
 
 ---
 
@@ -53,7 +64,7 @@
 x86_64 / aarch64 / armv7 三架构,自动识别 systemd / OpenRC / SysV:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kungec/kunpanel/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ttbb1211/kunpanel/main/scripts/install.sh | bash
 ```
 
 安装完成自动输出:**随机端口 + 随机安全入口 + 随机管理员密码**。
@@ -75,7 +86,7 @@ bash install.sh --uninstall              # 卸载
 
 ### Windows
 
-下载 [Release](https://github.com/kungec/kunpanel/releases) 中的 `kunpanel_windows_amd64.zip`,
+下载 [Release](https://github.com/ttbb1211/kunpanel/releases) 中的 `kunpanel_windows_amd64.zip`,
 解压后**右键以管理员身份运行 `install.bat`** —— 自动注册 Windows 服务、放行防火墙并输出访问地址。
 
 ### 🐳 Docker
@@ -156,8 +167,8 @@ docker run -d --name kunpanel -p 20000:20000 \
 ## 🛠 从源码构建
 
 ```bash
-git clone https://github.com/kungec/kunpanel.git && cd kunpanel
-bash build.sh v2.78.1     # 产出 linux(amd64/arm64/arm) + windows 全平台安装包
+git clone https://github.com/ttbb1211/kunpanel.git && cd kunpanel
+bash build.sh v2.84.1 ttbb1211/kunpanel     # 第二个参数 = 发布源，不传则用二进制内置默认值
 ```
 
 Go 1.23+,前端为原生 JS(`go:embed` 内嵌),无 Node 构建步骤。
