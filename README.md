@@ -10,14 +10,7 @@
 [![](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square)](https://golang.org)
 [![](https://img.shields.io/badge/平台-Linux%20%7C%20Windows-lightgrey?style=flat-square)](./README.md)
 [![](https://img.shields.io/badge/License-MIT-green?style=flat-square)](./LICENSE)
-[![](https://img.shields.io/badge/QQ群-307386089-eb1923?style=flat-square)](#交流群)
 [![](https://img.shields.io/badge/📖_使用教程-TUTORIAL-8a2be2?style=flat-square)](docs/TUTORIAL.md)
-
-**🎉 隆重感谢金牌赞助商 🎉**
-
-[![跨境 VPS · 专注家宽住宅 IP 云服务器](docs/sponsor-banner.svg)](https://www.kjvps.com)
-
-💬 交流 QQ 群:**`307386089`** —— 反馈 bug / 功能建议 / 运维经验交流
 
 </div>
 
@@ -173,17 +166,6 @@ bash build.sh v2.84.1 ttbb1211/kunpanel     # 第二个参数 = 发布源，不�
 
 Go 1.23+,前端为原生 JS(`go:embed` 内嵌),无 Node 构建步骤。
 
-## 🤝 赞助商
-
-<div align="center">
-
-[![跨境 VPS](docs/sponsor-banner.svg)](https://www.kjvps.com)
-
-**感谢 [跨境 VPS](https://www.kjvps.com) 为坤面板提供服务器资源赞助**
-家宽住宅 IP · 原生 IP · 大带宽 · 高防 —— [www.kjvps.com](https://www.kjvps.com)
-
-</div>
-
 ## 📄 License
 
-[MIT](LICENSE) · 交流 QQ 群:**307386089**
+[MIT](LICENSE) · 本仓库为 fork,原作者版权声明保留在 LICENSE 中。

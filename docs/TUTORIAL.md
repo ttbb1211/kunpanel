@@ -319,5 +319,4 @@ Docker 直接写 iptables DOCKER 链,绕过 ufw/firewalld。到 **安全 → 容
 
 ## 交流
 
-- QQ 群:**307386089**(反馈 bug / 功能建议 / 运维交流)
 - 问题反馈:[GitHub Issues](https://github.com/ttbb1211/kunpanel/issues)
