@@ -164,8 +164,20 @@ func SetACMEConfig(email string, staging bool) error {
 // fetchZeroSSLEAB 通过 ZeroSSL 公开接口用邮箱自动获取 EAB 凭据(acme.sh 同款
 // 机制):POST https://api.zerossl.com/acme/eab-credentials-email,
 // 表单字段 email,免鉴权,返回 eab_kid 与 eab_hmac_key,
-// 实现"只填邮箱"的 ZeroSSL 自动注册
+// 实现"只填邮箱"的 ZeroSSL 自动注册。ZeroSSL 接口偶发不稳定,内置一次重试
 func fetchZeroSSLEAB(email string, timeout time.Duration) (string, string, error) {
+	kid, mac, err := fetchZeroSSLEABOnce(email, timeout)
+	if err != nil {
+		time.Sleep(3 * time.Second)
+		kid, mac, err = fetchZeroSSLEABOnce(email, timeout)
+		if err != nil {
+			return "", "", fmt.Errorf("%v(已重试仍失败)", err)
+		}
+	}
+	return kid, mac, nil
+}
+
+func fetchZeroSSLEABOnce(email string, timeout time.Duration) (string, string, error) {
 	req, err := http.NewRequest("POST", "https://api.zerossl.com/acme/eab-credentials-email",
 		strings.NewReader(url.Values{"email": {email}}.Encode()))
 	if err != nil {
@@ -327,9 +339,13 @@ func acmeClientForStaged(provider string, stagingOverride bool, w io.Writer) (*l
 	cfg := lego.NewConfig(u)
 	cfg.CADirURL = dir
 	cfg.Certificate.KeyType = certcrypto.EC256
-	client, err := lego.NewClient(cfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("初始化 ACME 客户端失败: %v", err)
+	var client *lego.Client
+	if err := caRetry(w, func() error {
+		var e error
+		client, e = lego.NewClient(cfg)
+		return e
+	}); err != nil {
+		return nil, nil, fmt.Errorf("初始化 ACME 客户端失败: %v%s", err, caHint(provider, err))
 	}
 	// 注册信息一致性:registration URI 必须属于当前 CA(存量脏数据自动作废重注册)
 	regOK := a.Registration != nil && a.Registration.URI != "" && !stagingOverride
@@ -351,19 +367,27 @@ func acmeClientForStaged(provider string, stagingOverride bool, w io.Writer) (*l
 				return nil, nil, fmt.Errorf("EAB HMAC 格式不正确(应为 base64): %v", err)
 			}
 			a.EABHMAC = base64.RawURLEncoding.EncodeToString(hmacKey)
-			reg, err := client.Registration.RegisterWithExternalAccountBinding(registration.RegisterEABOptions{
-				TermsOfServiceAgreed: true,
-				Kid:                  a.EABKeyID,
-				HmacEncoded:          a.EABHMAC,
-			})
-			if err != nil {
-				return nil, nil, fmt.Errorf("EAB 注册失败: %v", err)
+			var reg *registration.Resource
+			if err := caRetry(w, func() error {
+				var e error
+				reg, e = client.Registration.RegisterWithExternalAccountBinding(registration.RegisterEABOptions{
+					TermsOfServiceAgreed: true,
+					Kid:                  a.EABKeyID,
+					HmacEncoded:          a.EABHMAC,
+				})
+				return e
+			}); err != nil {
+				return nil, nil, fmt.Errorf("EAB 注册失败: %v%s", err, caHint(provider, err))
 			}
 			u.Registration = reg
 		} else {
-			reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
-			if err != nil {
-				return nil, nil, fmt.Errorf("ACME 注册失败: %v", err)
+			var reg *registration.Resource
+			if err := caRetry(w, func() error {
+				var e error
+				reg, e = client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+				return e
+			}); err != nil {
+				return nil, nil, fmt.Errorf("ACME 注册失败: %v%s", err, caHint(provider, err))
 			}
 			u.Registration = reg
 		}
@@ -471,10 +495,92 @@ func (p *manualDNSProvider) CleanUp(domain, token, keyAuth string) error { retur
 // acmeIssueOpts 签发参数
 type AcmeIssueOpts struct {
 	Staging     bool
-	Method      string // http / dns / dnsapi
-	Alias       string // 手动 DNS 模式的别名记录(备注用;面板自动跟随主域 CNAME)
-	DNSApi      bool   // DNS API 自动验证(凭据来自已保存的 DNS 服务商配置)
-	DNSApiAlias string // DNS API 模式的 CNAME 别名记录(可选;TXT 原样写到主域 CNAME 指向的记录)
+	Method      string   // http / dns / dnsapi
+	Alias       string   // 手动 DNS 模式的别名记录(备注用;面板自动跟随主域 CNAME)
+	DNSApi      bool     // DNS API 自动验证(凭据来自已保存的 DNS 服务商配置)
+	DNSApiAlias string   // DNS API 模式的 CNAME 别名记录(可选;TXT 原样写到主域 CNAME 指向的记录)
+	Domains     []string // 勾选要签入证书的域名(须为站点绑定域名的子集;空=全部)
+	Wildcard    bool     // 自动组合泛域名 *.主域(仅 DNS/DNS API 验证)
+}
+
+// pickSiteDomains 从站点绑定域名中挑出用户勾选的部分(白名单校验:只允许
+// 站点已绑定的域名,防止 API 直调签任意域名);勾选为空或全不匹配时回退全部
+func pickSiteDomains(siteDomains, picked []string) []string {
+	if len(picked) == 0 {
+		return siteDomains
+	}
+	allow := map[string]bool{}
+	for _, d := range siteDomains {
+		allow[strings.TrimSpace(d)] = true
+	}
+	var out []string
+	for _, d := range picked {
+		if d = strings.TrimSpace(d); allow[d] {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return siteDomains
+	}
+	return out
+}
+
+// expandWildcardDomains 泛域名组合:所选范围内"不被其他所选域名覆盖"的域名
+// (即主域)生成 *.主域;再裁掉被泛域名覆盖的子域——www.x.cn 的验证名
+// _acme-challenge.www.x.cn 不再参与,主域一条 CNAME/TXT 即可签整组证书
+func expandWildcardDomains(domains []string) []string {
+	bare := make([]string, 0, len(domains))
+	for _, d := range domains {
+		if d = strings.TrimPrefix(strings.TrimSpace(d), "*."); d != "" {
+			bare = append(bare, d)
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	put := func(x string) {
+		if !seen[x] {
+			seen[x] = true
+			out = append(out, x)
+		}
+	}
+	for _, d := range bare {
+		isSub := false
+		for _, o := range bare {
+			if o != d && len(d) > len(o)+1 && d[len(d)-len(o)-1:] == "."+o {
+				isSub = true
+				break
+			}
+		}
+		put(d)
+		if !isSub {
+			put("*." + d)
+		}
+	}
+	// 覆盖裁剪:已被某个 *.b 覆盖的子域不再单独签(LE 通配符只匹配一级,
+	// 主域本身不算被覆盖,必须保留)
+	wildBases := map[string]bool{}
+	for _, x := range out {
+		if strings.HasPrefix(x, "*.") {
+			wildBases[strings.TrimPrefix(x, "*.")] = true
+		}
+	}
+	var final []string
+	for _, x := range out {
+		if !strings.HasPrefix(x, "*.") {
+			covered := false
+			for b := range wildBases {
+				if len(x) > len(b)+1 && x[len(x)-len(b)-1:] == "."+b {
+					covered = true
+					break
+				}
+			}
+			if covered {
+				continue
+			}
+		}
+		final = append(final, x)
+	}
+	return final
 }
 
 // orderDomains 校验并归一域名(通配符仅 DNS 验证支持)。
@@ -510,6 +616,54 @@ func orderDomains(raw []string, method string) ([]string, bool, error) {
 	return out, isIP, nil
 }
 
+// transientCAErr 判断是否为 CA 端瞬时故障:nonce 拉取失败/空响应/5xx/超时等,
+// ZeroSSL 的 newNonce 偶发返回空响应与 5xx,重试即可恢复
+func transientCAErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, k := range []string{"nonce", "unexpected end of json", "502", "503", "504", "timeout", "tls handshake", "connection reset", "server is currently busy"} {
+		if strings.Contains(s, strings.ToLower(k)) {
+			return true
+		}
+	}
+	return false
+}
+
+// caRetry CA 瞬时故障自动重试(最多 3 次,递增退避);非瞬时错误原样返回
+func caRetry(w io.Writer, fn func() error) error {
+	var last error
+	for attempt := 1; attempt <= 3; attempt++ {
+		last = fn()
+		if last == nil || !transientCAErr(last) {
+			return last
+		}
+		if attempt < 3 {
+			delay := time.Duration(attempt*4) * time.Second
+			tail := last.Error()
+			if len(tail) > 160 {
+				tail = tail[:160]
+			}
+			fmt.Fprintf(w, ">> CA 接口瞬时故障(%s),%s 后自动重试(%d/3)...\n", tail, delay, attempt)
+			time.Sleep(delay)
+		}
+	}
+	return last
+}
+
+// caHint 按 CA 追加排障提示(错误透传给任务日志)
+func caHint(provider string, err error) string {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if provider == "zerossl" && (transientCAErr(err) || strings.Contains(msg, "zerossl") || strings.Contains(msg, "ZeroSSL")) {
+		return "(ZeroSSL 接口偶发不稳定:可稍后重试;反复失败可在「证书服务商」处改用 Let's Encrypt,或配置 ZeroSSL 的 EAB 凭据)"
+	}
+	return ""
+}
+
 // IssueCertForSite 签发证书并自动绑定(异步任务体)
 func IssueCertForSite(siteID string, opts AcmeIssueOpts, w io.Writer) (string, error) {
 	site, err := GetSite(siteID)
@@ -522,7 +676,7 @@ func IssueCertForSite(siteID string, opts AcmeIssueOpts, w io.Writer) (string, e
 	} else if method != "dns" {
 		method = "http"
 	}
-	domains, isIP, err := orderDomains(strings.Fields(site.Domain), method)
+	domains, isIP, err := orderDomains(pickSiteDomains(strings.Fields(site.Domain), opts.Domains), method)
 	if err != nil {
 		return "", err
 	}
@@ -535,11 +689,18 @@ func IssueCertForSite(siteID string, opts AcmeIssueOpts, w io.Writer) (string, e
 			fmt.Fprintln(w, ">> 检测到 IP 标识:改用 HTTP 文件验证,并使用 shortlived 档案(约 6 天有效期,自动续期)")
 		}
 	}
+	if opts.Wildcard {
+		if method != "dns" && method != "dnsapi" {
+			return "", fmt.Errorf("泛域名(*)仅 DNS / DNS API 验证支持(HTTP 验证无法签发通配符);请切换验证方式或取消勾选泛域名")
+		}
+		domains = expandWildcardDomains(domains)
+		fmt.Fprintf(w, ">> 已组合泛域名,实际申请: %s\n", strings.Join(domains, " "))
+	}
 	prov := loadACMEAccount().Provider
 	staging := opts.Staging || providerStaging(prov)
 	// staging 覆盖:账户目录仍是生产时,本次签发强制走 staging 目录
 	stagingOverride := staging && !providerStaging(prov)
-	fmt.Fprintf(w, ">> 为 %s 申请 %s 证书(%s / %s 验证)...\n", site.Domain, providerName(prov), stageName(staging), map[string]string{"http": "HTTP 文件", "dns": "DNS", "dnsapi": "DNS API"}[method])
+	fmt.Fprintf(w, ">> 为 %s 申请 %s 证书(%s / %s 验证)...\n", strings.Join(domains, " "), providerName(prov), stageName(staging), map[string]string{"http": "HTTP 文件", "dns": "DNS", "dnsapi": "DNS API"}[method])
 
 	client, _, err := acmeClientForStaged(prov, stagingOverride, w)
 	if err != nil {
@@ -612,17 +773,25 @@ func IssueCertForSite(siteID string, opts AcmeIssueOpts, w io.Writer) (string, e
 		if err != nil {
 			return "", err
 		}
-		res, err = client.Certificate.ObtainForCSR(certificate.ObtainForCSRRequest{
-			CSR:        csrObj,
-			PrivateKey: key,
-			Bundle:     true,
-			Profile:    profile,
+		err = caRetry(w, func() error {
+			var e error
+			res, e = client.Certificate.ObtainForCSR(certificate.ObtainForCSRRequest{
+				CSR:        csrObj,
+				PrivateKey: key,
+				Bundle:     true,
+				Profile:    profile,
+			})
+			return e
 		})
 	} else {
-		res, err = client.Certificate.Obtain(certificate.ObtainRequest{
-			Domains: domains,
-			Bundle:  true,
-			Profile: profile,
+		err = caRetry(w, func() error {
+			var e error
+			res, e = client.Certificate.Obtain(certificate.ObtainRequest{
+				Domains: domains,
+				Bundle:  true,
+				Profile: profile,
+			})
+			return e
 		})
 	}
 	if err != nil {
@@ -651,9 +820,9 @@ func IssueCertForSite(siteID string, opts AcmeIssueOpts, w io.Writer) (string, e
 	}
 	return "", fmt.Errorf("签发失败: DNS 服务商 API 凭据无效或权限不足(%s)", clip)
 			}
-			return "", fmt.Errorf("签发失败: %v(请检查 DNS API 凭据与域名归属)", err)
+			return "", fmt.Errorf("签发失败: %v%s(请检查 DNS API 凭据与域名归属)", err, caHint(prov, err))
 		}
-		return "", fmt.Errorf("签发失败: %v(请确认域名已解析到本服务器 IP,且 80 端口对外开放)", err)
+		return "", fmt.Errorf("签发失败: %v%s(请确认域名已解析到本服务器 IP,且 80 端口对外开放)", err, caHint(prov, err))
 	}
 
 	certID := "cert_" + fmt.Sprintf("%d", time.Now().UnixNano()/1000000)
@@ -751,9 +920,14 @@ func renewCertInPlace(id string, w io.Writer) error {
 		PrivateKey:  certKeyBytes(id),
 		CSR:         certCSRBytes(id),
 	}
-	res, err := client.Certificate.RenewWithOptions(certRes, &certificate.RenewOptions{
-		Bundle:  true,
-		Profile: info.Profile,
+	var res *certificate.Resource
+	err = caRetry(w, func() error {
+		var e error
+		res, e = client.Certificate.RenewWithOptions(certRes, &certificate.RenewOptions{
+			Bundle:  true,
+			Profile: info.Profile,
+		})
+		return e
 	})
 	if err != nil {
 		if method == "dns" {
@@ -893,12 +1067,17 @@ func IssueCertTask(siteID string, staging bool) (string, error) {
 	return IssueCertTaskEx(siteID, AcmeIssueOpts{Staging: staging})
 }
 
-// IssueCertTaskEx 异步签发任务
+// IssueCertTaskEx 异步签发任务(附带原始参数:失败后可在任务中心一键重试)
 func IssueCertTaskEx(siteID string, opts AcmeIssueOpts) (string, error) {
+	body := map[string]any{
+		"site_id": siteID, "staging": opts.Staging, "method": opts.Method, "alias": opts.Alias,
+		"dns_api": opts.DNSApi, "dns_alias": opts.DNSApiAlias,
+		"domains": opts.Domains, "wildcard": opts.Wildcard,
+	}
 	t, err := taskx.M.Start("acme-issue", func(w io.Writer) error {
 		_, err := IssueCertForSite(siteID, opts, w)
 		return err
-	})
+	}, taskx.WithRetry("acme-issue", body))
 	if err != nil {
 		return "", err
 	}

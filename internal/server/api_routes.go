@@ -48,6 +48,9 @@ func (s *Server) registerAPI() {
 	// 任务(安装/部署进度)
 	m.Handle("GET /api/v1/tasks", wrap(http.HandlerFunc(s.handleTaskList)))
 	m.Handle("GET /api/v1/tasks/{id}", wrap(http.HandlerFunc(s.handleTaskGet)))
+	m.Handle("POST /api/v1/tasks/{id}/delete", wrap(http.HandlerFunc(s.handleTaskDelete)))
+	m.Handle("POST /api/v1/tasks/{id}/retry", wrap(http.HandlerFunc(s.handleTaskRetry)))
+	m.Handle("POST /api/v1/tasks/clear-failed", wrap(http.HandlerFunc(s.handleTaskClearFailed)))
 
 	// 面板在线更新(对接 GitHub Releases)
 	m.Handle("GET /api/v1/panel/update", wrap(http.HandlerFunc(s.handlePanelUpdateCheck)))
@@ -99,6 +102,11 @@ func (s *Server) registerAPI() {
 	m.Handle("GET /api/v1/ssh", wrap(http.HandlerFunc(s.handleSSHStatus)))
 	m.Handle("POST /api/v1/ssh/port", wrap(http.HandlerFunc(s.handleSSHPort)))
 	m.Handle("POST /api/v1/ssh/hardening", wrap(http.HandlerFunc(s.handleSSHHardening)))
+	m.Handle("GET /api/v1/ssh/fail2ban", wrap(http.HandlerFunc(s.handleF2BStatus)))
+	m.Handle("POST /api/v1/ssh/fail2ban/enable", wrap(http.HandlerFunc(s.handleF2BEnable)))
+	m.Handle("POST /api/v1/ssh/fail2ban/disable", wrap(http.HandlerFunc(s.handleF2BDisable)))
+	m.Handle("POST /api/v1/ssh/fail2ban/params", wrap(http.HandlerFunc(s.handleF2BParams)))
+	m.Handle("POST /api/v1/ssh/fail2ban/unban", wrap(http.HandlerFunc(s.handleF2BUnban)))
 	m.Handle("POST /api/v1/ssh/keys", wrap(http.HandlerFunc(s.handleSSHKeyAdd)))
 	m.Handle("DELETE /api/v1/ssh/keys/{index}", wrap(http.HandlerFunc(s.handleSSHKeyRemove)))
 
@@ -166,6 +174,23 @@ func (s *Server) registerAPI() {
 	m.Handle("GET /api/v1/db/{key}/backups/download", wrap(http.HandlerFunc(s.handleDbBackupDownload)))
 	m.Handle("DELETE /api/v1/db/{key}/backups/{file}", wrap(http.HandlerFunc(s.handleDbBackupDelete)))
 
+	// 数据库账号管理(MySQL/MariaDB)
+	m.Handle("GET /api/v1/db/{key}/users", wrap(http.HandlerFunc(s.handleDbUsers)))
+	m.Handle("GET /api/v1/db/{key}/users/dbmap", wrap(http.HandlerFunc(s.handleDbUserDBMap)))
+	m.Handle("POST /api/v1/db/{key}/users/create", wrap(http.HandlerFunc(s.handleDbUserCreate)))
+	m.Handle("POST /api/v1/db/{key}/users/delete", wrap(http.HandlerFunc(s.handleDbUserDelete)))
+	m.Handle("POST /api/v1/db/{key}/users/password", wrap(http.HandlerFunc(s.handleDbUserPassword)))
+	m.Handle("POST /api/v1/db/{key}/users/grant", wrap(http.HandlerFunc(s.handleDbUserGrant)))
+	m.Handle("POST /api/v1/db/{key}/users/revoke", wrap(http.HandlerFunc(s.handleDbUserRevoke)))
+	m.Handle("GET /api/v1/db/{key}/users/grants", wrap(http.HandlerFunc(s.handleDbUserGrants)))
+
+	// 数据库主从同步(主库=本机面板实例,从库=可达的外部 MySQL/MariaDB)
+	m.Handle("GET /api/v1/db/replication", wrap(http.HandlerFunc(s.handleReplStatus)))
+	m.Handle("POST /api/v1/db/replication/setup", wrap(http.HandlerFunc(s.handleReplSetup)))
+	m.Handle("POST /api/v1/db/replication/stop", wrap(http.HandlerFunc(s.handleReplStop)))
+	m.Handle("POST /api/v1/db/replication/start", wrap(http.HandlerFunc(s.handleReplStart)))
+	m.Handle("POST /api/v1/db/replication/reset", wrap(http.HandlerFunc(s.handleReplReset)))
+
 	// 面板备份/恢复 + 系统清理
 	m.Handle("GET /api/v1/panel/backup", wrap(http.HandlerFunc(s.handlePanelBackup)))
 	m.Handle("POST /api/v1/panel/restore", wrap(http.HandlerFunc(s.handlePanelRestore)))
@@ -215,6 +240,7 @@ func (s *Server) registerAPI() {
 	m.Handle("GET /api/v1/panel/ssl", wrap(http.HandlerFunc(s.handlePanelSSLGet)))
 	m.Handle("POST /api/v1/panel/ssl", wrap(http.HandlerFunc(s.handlePanelSSLSave)))
 	m.Handle("POST /api/v1/panel/ssl/selfsign", wrap(http.HandlerFunc(s.handlePanelSSLSelfSign)))
+	m.Handle("GET /api/v1/panel/ssl/site-certs", wrap(http.HandlerFunc(s.handlePanelSSLSiteCerts)))
 	m.Handle("POST /api/v1/panel/ssl/le", wrap(http.HandlerFunc(s.handlePanelSSLIssueLE)))
 	m.Handle("GET /api/v1/panel/checkup", wrap(http.HandlerFunc(s.handlePanelCheckup)))
 	m.Handle("POST /api/v1/notifications/clear", wrap(http.HandlerFunc(s.handleNotifyClear)))

@@ -239,7 +239,42 @@ function emptyState(icon, text, sub) {
 }
 
 /* ---------- Toast ---------- */
+// 危险操作按钮的全局即时反馈:删除/卸载等按钮点击后立即转圈(实际执行常
+// 有 1~3 秒 API 延迟,此前完全无反馈像没点上);完成或失败都会 toast,
+// toast 出现时统一清场,15 秒兜底防泄漏
+function clearBusyBtns() {
+  document.querySelectorAll(".btn-busy").forEach((b) => {
+    b.classList.remove("btn-busy");
+    b.style.pointerEvents = "";
+    const s = b.querySelector(".spin-sm");
+    if (s) s.remove();
+    delete b.dataset.busy;
+  });
+}
+document.addEventListener(
+  "click",
+  (e) => {
+    const b = e.target.closest(".btn");
+    if (!b) return;
+    const t = (b.textContent || "").trim();
+    if (!/删除|卸载|清空|恢复|解绑|回滚|停用/.test(t)) return;
+    if (b.dataset.busy) {
+      // 已在执行中:拦截重复点击,防双发请求
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    }
+    b.dataset.busy = "1";
+    b.classList.add("btn-busy");
+    b.style.pointerEvents = "none";
+    b.insertAdjacentHTML("beforeend", ' <span class="spin-sm"></span>');
+    setTimeout(clearBusyBtns, 15000);
+  },
+  true
+);
+
 function toast(msg, type = "success", ms = 2600, onclick) {
+  clearBusyBtns();
   const wrap = qs("#toast-wrap");
   const el = document.createElement("div");
   el.className = "toast " + type;
@@ -268,6 +303,7 @@ function toast(msg, type = "success", ms = 2600, onclick) {
 /* ---------- Modal ---------- */
 let _modalStack = [];
 function modal({ title, body, footer, width = 540, onClose }) {
+  clearBusyBtns(); // 弹窗打开本身就是反馈,清掉触发按钮上的转圈
   const mask = qs("#modal-mask");
   const box = qs("#modal-box");
   box.style.width = Math.min(width, window.innerWidth - 24) + "px";
@@ -339,6 +375,7 @@ function confirmDlg(msg, opts = {}) {
     const danger = opts.danger !== false;
     // close() 会同步触发 onClose;必须先 resolve 结果,否则 null/false 覆盖真实选择(点确定等于取消)
     let done = false;
+    let confirmed = false;
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
     const m = openLayer({
       title: opts.title || "操作确认",
@@ -347,10 +384,14 @@ function confirmDlg(msg, opts = {}) {
       footer:
         '<button class="btn btn-plain" data-act="no">取 消</button>' +
         '<button class="btn ' + (danger ? "btn-danger" : "btn-primary") + '" data-act="yes">确 定</button>',
-      onClose: () => finish(false),
+      onClose: () => {
+        // 取消/× 关闭:清掉触发按钮的转圈(确认执行时不清,toast 出现时才清)
+        if (!confirmed) clearBusyBtns();
+        finish(false);
+      },
     });
     qs('[data-act="no"]', m.el).onclick = () => { finish(false); m.close(); };
-    qs('[data-act="yes"]', m.el).onclick = () => { finish(true); m.close(); };
+    qs('[data-act="yes"]', m.el).onclick = () => { confirmed = true; finish(true); m.close(); };
   });
 }
 
@@ -358,6 +399,7 @@ function confirmDlg(msg, opts = {}) {
 function promptDlg(title, fields) {
   return new Promise((resolve) => {
     let done = false;
+    let confirmed = false;
     const finish = (v) => { if (!done) { done = true; resolve(v); } }; // 同上:先 resolve 再 close
     const body = fields.map((f, i) =>
       '<div class="form-item ' + (f.required ? "required" : "") + '" style="margin-bottom:14px">' +
@@ -370,7 +412,10 @@ function promptDlg(title, fields) {
     const m = openLayer({
       title, width: 480, body,
       footer: '<button class="btn btn-plain" data-act="no">取 消</button><button class="btn btn-primary" data-act="yes">确 定</button>',
-      onClose: () => finish(null),
+      onClose: () => {
+        if (!confirmed) clearBusyBtns(); // 同 confirmDlg:取消时清掉触发按钮的转圈
+        finish(null);
+      },
     });
     qs('[data-act="no"]', m.el).onclick = () => { finish(null); m.close(); };
     qs('[data-act="yes"]', m.el).onclick = () => {
@@ -379,6 +424,7 @@ function promptDlg(title, fields) {
       for (const f of fields) {
         if (f.required && !String(out[f.key] || "").trim()) { toast(f.label + " 不能为空", "error"); return; }
       }
+      confirmed = true;
       finish(out);
       m.close();
     };
@@ -442,7 +488,32 @@ function taskModal(taskId, onDone) {
       if (t.status !== "running") {
         doneBtn.disabled = false;
         if (t.progress && t.progress.total > 0) { barEl.style.width = "100%"; stageEl.textContent = t.status === "success" ? "全部完成" : "失败"; }
-        if (t.status === "failed") toast("任务失败: " + (t.error || ""), "error", 5000);
+        if (t.status === "failed") {
+          toast("任务失败: " + (t.error || ""), "error", 5000);
+          // 支持重试的失败任务:页脚插入「重试此任务」(按保存的原始参数重新发起)
+          if (t.retry && t.retry.kind) {
+            let rb = qs('[data-act="retry"]', m.el);
+            if (!rb) {
+              rb = document.createElement("button");
+              rb.className = "btn btn-plain";
+              rb.dataset.act = "retry";
+              rb.textContent = "重试此任务";
+              rb.onclick = async () => {
+                try {
+                  const d = await api("/tasks/" + taskId + "/retry", { method: "POST", body: {} });
+                  taskId = d.task_id; // 轮询切到新任务
+                  doneBtn.disabled = true;
+                  rb.disabled = true;
+                  logEl.textContent = "";
+                  fire("retried");
+                  poll();
+                } catch (e) { toast(e.message, "error", 8000); }
+              };
+              const f = m.el.querySelector(".modal-footer");
+              f.insertBefore(rb, doneBtn);
+            } else { rb.disabled = false; }
+          }
+        }
         fire(t.status);
         return;
       }
@@ -460,10 +531,17 @@ function taskCenter() {
     title: "后台任务",
     width: 720,
     body: '<div id="tc-list"><div class="boot-loading" style="height:60px"><div class="spinner"></div></div></div>',
-    footer: '<button class="btn btn-primary" data-act="close">关 闭</button>',
+    footer: '<button class="btn btn-danger-plain" data-act="clear">清空失败记录</button><button class="btn btn-primary" data-act="close">关 闭</button>',
     onClose: () => { if (_tcTimer) { clearInterval(_tcTimer); _tcTimer = null; } },
   });
   qs('[data-act="close"]', m.el).onclick = m.close;
+  qs('[data-act="clear"]', m.el).onclick = async () => {
+    try {
+      const d = await api("/tasks/clear-failed", { method: "POST", body: {} });
+      toast("已清空 " + (d.cleared || 0) + " 条失败记录");
+      render();
+    } catch (e) { toast(e.message, "error"); }
+  };
   const fmtDur = (a, b) => {
     const s = Math.max(0, Math.floor(((b ? new Date(b).getTime() : Date.now()) - new Date(a).getTime()) / 1000));
     return s < 60 ? s + " 秒" : Math.floor(s / 60) + " 分 " + (s % 60) + " 秒";
@@ -482,12 +560,69 @@ function taskCenter() {
       '<div class="tc-meta">开始 ' + fmtT(t.started_at) + " · 已用时 " + fmtDur(t.started_at, t.ended_at) +
       (t.error ? ' · <span style="color:var(--danger)">' + esc(t.error) + "</span>" : "") + "</div>" +
       '<pre class="tc-tail">' + esc((t.log_tail || "").split("\n").filter(Boolean).slice(-3).join("\n") || "(等待输出…)") + "</pre>" +
-      '<button class="btn btn-sm btn-plain" data-id="' + esc(t.id) + '">' + I("eye") + " 查看完整日志</button></div>"
+      '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+      '<button class="btn btn-sm btn-plain" data-id="' + esc(t.id) + '">' + I("eye") + " 查看完整日志</button>" +
+      (t.status === "failed"
+        ? '<button class="btn btn-sm btn-danger-plain" data-tc-del="' + esc(t.id) + '">删除记录</button>' +
+          (t.retry && t.retry.kind ? '<button class="btn btn-sm btn-primary" data-tc-retry="' + esc(t.id) + '">重试</button>' : "")
+        : "") + "</div></div>"
     ).join("");
-    qsa(".tc-item button", box).forEach((b) => (b.onclick = () => taskModal(b.dataset.id)));
+    qsa(".tc-item button", box).forEach((b) => {
+      if (b.dataset.tcDel) {
+        b.onclick = async () => {
+          if (!(await confirmDlg("确定删除这条失败任务记录吗?", { danger: true }))) return;
+          try { await api("/tasks/" + b.dataset.tcDel + "/delete", { method: "POST", body: {} }); render(); }
+          catch (e) { toast(e.message, "error"); }
+        };
+      } else if (b.dataset.tcRetry) {
+        b.onclick = async () => {
+          try {
+            const d = await api("/tasks/" + b.dataset.tcRetry + "/retry", { method: "POST", body: {} });
+            toast("已重新发起,新任务执行中", "info");
+            taskModal(d.task_id);
+            render();
+          } catch (e) { toast(e.message, "error", 6000); }
+        };
+      } else { b.onclick = () => taskModal(b.dataset.id); }
+    });
   };
   render();
   _tcTimer = setInterval(render, 3000);
+}
+
+/* ---------- 服务器文件选择器(点目录进入,点文件回填) ---------- */
+function serverFilePicker(onPick, startPath) {
+  let cur = startPath || "/";
+  const m = openLayer({
+    title: "选择服务器文件",
+    width: 640,
+    body: '<div id="sfp-crumb" class="help mono" style="margin-bottom:8px;word-break:break-all"></div>' +
+      '<div id="sfp-list" style="max-height:46vh;overflow:auto;border:1px solid var(--border-light);border-radius:8px"></div>' +
+      '<div class="help" style="margin-top:8px">点击目录进入,点击文件选择(面板有权限读取的文件均可)</div>',
+    footer: '<button class="btn btn-plain" data-act="close">关 闭</button>',
+  });
+  qs('[data-act="close"]', m.el).onclick = m.close;
+  const row = (marker, name, attr, val) =>
+    '<div class="sfp-row" ' + attr + '="' + esc(val) + '"><span class="help" style="margin:0 6px 0 0;display:inline">' + marker + "</span>" + esc(name) + "</div>";
+  const load = async (p) => {
+    cur = p;
+    qs("#sfp-crumb", m.el).textContent = cur;
+    const box = qs("#sfp-list", m.el);
+    box.innerHTML = '<div class="boot-loading" style="height:50px"><div class="spinner"></div></div>';
+    try {
+      const d = await api("/files?path=" + encodeURIComponent(p));
+      const base = d.path === "/" ? "" : d.path;
+      let html = d.parent && d.parent !== d.path ? row("..(上级目录)", "", "data-go", d.parent) : "";
+      (d.entries || []).slice().sort((a, b) => (b.dir ? 1 : 0) - (a.dir ? 1 : 0) || String(a.name).localeCompare(String(b.name))).forEach((e) => {
+        const full = (base === "" ? "" : base) + "/" + e.name;
+        html += e.dir ? row("[目录]", e.name, "data-go", full) : row("[文件]", e.name, "data-file", full);
+      });
+      box.innerHTML = html || '<div class="help" style="padding:10px">空目录</div>';
+      qsa("[data-go]", box).forEach((x) => (x.onclick = () => load(x.dataset.go)));
+      qsa("[data-file]", box).forEach((x) => (x.onclick = () => { onPick(x.dataset.file); m.close(); }));
+    } catch (e) { box.innerHTML = emptyState("warn", "读取失败", e.message); }
+  };
+  load(cur);
 }
 
 /* ---------- 环形仪表 ---------- */

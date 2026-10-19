@@ -41,6 +41,8 @@ PAGES.dashboard = {
       if (days <= (c.profile === "shortlived" ? 3 : 30)) expiring++;
     });
     var memPct = s.mem_percent || 0, cpuPct = s.cpu_percent || 0;
+    var hasSwap = (s.swap_total || 0) > 0;
+    var swapPct = hasSwap ? (s.swap_percent || 0) : 0;
     // 数据库 KPI = 各运行实例的业务库总数(与数据库页口径一致;databases 由后端统计)
     var dbTotal = dbs.reduce(function(a, r) { return a + (r.running ? r.databases || 0 : 0); }, 0);
 
@@ -69,6 +71,7 @@ PAGES.dashboard = {
       '<span class="net-line up">' + I("netUp") + ' <b id="live-tx">' + fmtSpeed(s.net_tx_speed) + "</b></span></span></div>" +
       bar("CPU 使用率", cpuPct, (s.cpu_cores || "-") + " 核 · " + esc((s.cpu_model || "-").split("@")[0].trim().slice(0, 24)), "", "live-cpu") +
       bar("内存使用", memPct, fmtBytes(s.mem_used) + " / " + fmtBytes(s.mem_total), "", "live-mem") +
+      (hasSwap ? bar("Swap 交换分区", swapPct, fmtBytes(s.swap_used) + " / " + fmtBytes(s.swap_total), "", "live-swap") : "") +
       bar("系统负载", Math.min(100, (s.load1 / Math.max(1, s.cpu_cores)) * 100), "1/5/15 分钟: " + s.load1 + " / " + s.load5 + " / " + s.load15, "", "live-load") +
       diskRows +
       "</div>" +
@@ -154,13 +157,14 @@ PAGES.dashboard = {
         if (el.dataset.route !== "dashboard") return;
         var s2 = d2.system;
         var pairs = [["live-cpu", (s2.cpu_percent || 0).toFixed(1) + "%"], ["live-mem", (s2.mem_percent || 0).toFixed(1) + "%"],
+          ["live-swap", (s2.swap_percent || 0).toFixed(1) + "%"],
           ["live-load", Math.min(100, (s2.load1 / Math.max(1, s2.cpu_cores)) * 100).toFixed(1) + "%"],
           ["live-rx", fmtSpeed(s2.net_rx_speed)], ["live-tx", fmtSpeed(s2.net_tx_speed)]];
         pairs.forEach(function(pr) {
           var n = document.getElementById(pr[0]);
           if (n) n.textContent = pr[1];
         });
-        [["live-cpu", s2.cpu_percent || 0], ["live-mem", s2.mem_percent || 0],
+        [["live-cpu", s2.cpu_percent || 0], ["live-mem", s2.mem_percent || 0], ["live-swap", s2.swap_percent || 0],
          ["live-load", Math.min(100, (s2.load1 / Math.max(1, s2.cpu_cores)) * 100)],
          ["live-disk", s2.disks && s2.disks[0] ? s2.disks[0].usage_percent : 0]].forEach(function(pr) {
           var b = document.getElementById(pr[0] + "-bar");
@@ -1683,6 +1687,10 @@ PAGES.websites = {
               <option value="dnsapi">DNS API 自动验证(支持通配符,TXT 记录自动添加,推荐批量/通配符场景)</option>
               <option value="dns">DNS 手动验证(支持通配符/无法开放 80 端口的场景,签发时需手动添加 TXT 记录)</option>
             </select></div>
+          <div class="form-item"><label>申请域名(站点绑定的域名,勾选要签入证书的)</label>
+            <div id="acme-domain-list" style="display:flex;flex-direction:column;gap:2px"></div>
+            <label class="radio-line" style="margin-top:6px"><input type="checkbox" id="acme-wildcard"> 自动组合泛域名(*.主域:一张证书覆盖主域和所有子域名,只需一条 CNAME/TXT;HTTP 验证下勾选会自动切换到 DNS API)</label>
+            <div class="help" id="acme-domain-plan"></div></div>
           <div id="acme-dnsapi-row" style="display:none">
             <div class="form-item"><label>DNS 服务商</label>
               <select class="select" id="acme-dnsapi-provider" style="max-width:320px"></select>
@@ -1781,11 +1789,54 @@ PAGES.websites = {
     })();
     var methodSel = qs("#acme-method", m.el);
     var dnsapiLoaded = false;
-    methodSel.onchange = function() {
-      qs("#acme-alias-row", m.el).style.display = this.value === "dns" ? "" : "none";
-      qs("#acme-dnsapi-row", m.el).style.display = this.value === "dnsapi" ? "" : "none";
-      if (this.value === "dnsapi") loadDNSAPIPanel();
+    // 申请域名勾选 + 泛域名组合预览(与后端 expandWildcardDomains 同规则)
+    var planDomains = function(domains, wildcard) {
+      var out = [], seen = {};
+      var put = function(x) { if (x && !seen[x]) { seen[x] = 1; out.push(x); } };
+      if (!wildcard) { domains.forEach(put); return out; }
+      var bare = domains.map(function(d) { return d.replace(/^\*\./, ""); });
+      bare.forEach(function(d) {
+        var isSub = bare.some(function(o) { return o && o !== d && d.length > o.length + 1 && d.slice(-(o.length + 1)) === "." + o; });
+        put(d);
+        if (!isSub) put("*." + d);
+      });
+      var wildBases = out.filter(function(x) { return x.indexOf("*.") === 0; }).map(function(x) { return x.slice(2); });
+      return out.filter(function(x) {
+        if (x.indexOf("*.") === 0) return true;
+        return !wildBases.some(function(b) { return x.length > b.length + 1 && x.slice(-(b.length + 1)) === "." + b; });
+      });
     };
+    var siteDomains = (site.domain || "").split(/\s+/).filter(Boolean);
+    var domainListEl = qs("#acme-domain-list", m.el);
+    domainListEl.innerHTML = siteDomains.map(function(d) {
+      return '<label class="radio-line" style="margin:0"><input type="checkbox" class="acme-dom" value="' + esc(d) + '" checked> <span class="mono">' + esc(d) + "</span></label>";
+    }).join("") || '<div class="help">站点没有绑定域名</div>';
+    // 行可见性统一切换(程序赋值不会触发 onchange,必须显式调用)
+    var applyMethodUI = function(v) {
+      qs("#acme-alias-row", m.el).style.display = v === "dns" ? "" : "none";
+      qs("#acme-dnsapi-row", m.el).style.display = v === "dnsapi" ? "" : "none";
+      if (v === "dnsapi") loadDNSAPIPanel();
+    };
+    var syncDomainPlan = function() {
+      var wc = qs("#acme-wildcard", m.el);
+      // 泛域名仅 DNS/DNS API 验证可签:HTTP 模式下勾选时自动切换验证方式
+      // (不禁用复选框——禁用会让用户以为功能不可用)
+      if (wc.checked && methodSel.value === "http") {
+        methodSel.value = "dnsapi";
+        toast("泛域名仅 DNS/DNS API 验证支持,已自动切换验证方式", "info", 4000);
+      }
+      applyMethodUI(methodSel.value);
+      var checked = qsa(".acme-dom:checked", m.el).map(function(x) { return x.value; });
+      var plan = planDomains(checked, wc.checked);
+      qs("#acme-domain-plan", m.el).textContent = plan.length ? "实际申请: " + plan.join(" ") : "";
+    };
+    qsa(".acme-dom", m.el).forEach(function(x) { x.onchange = syncDomainPlan; });
+    qs("#acme-wildcard", m.el).onchange = syncDomainPlan;
+    methodSel.onchange = function() {
+      applyMethodUI(this.value);
+      syncDomainPlan();
+    };
+    syncDomainPlan();
     // DNS API 服务商列表与凭据表单(懒加载一次)
     var dnsapiMeta = {};
     var renderDNSAPIFields = function(key, creds) {
@@ -1825,6 +1876,10 @@ PAGES.websites = {
       const method = methodSel.value;
       const alias = qs("#acme-alias", m.el).value.trim();
       const dnsAlias = qs("#acme-dnsapi-alias", m.el).value.trim();
+      const certDomains = qsa(".acme-dom:checked", m.el).map((x) => x.value);
+      if (!certDomains.length) { toast("请至少勾选一个要申请的域名", "error"); return; }
+      const wildcard = qs("#acme-wildcard", m.el).checked;
+      if (wildcard && method === "http") { toast("泛域名仅 DNS/DNS API 验证支持,请切换验证方式", "error"); return; }
       if (!email) { toast("请填写申请邮箱", "error"); return; }
       const body = { email, staging, provider, eab_key_id: qs("#acme-eab-kid", m.el).value.trim(), eab_hmac: qs("#acme-eab-hmac", m.el).value.trim() };
       try { await api("/ssl/acme/config", { method: "POST", body }); }
@@ -1839,7 +1894,7 @@ PAGES.websites = {
       }
       toast(method === "dns" ? "正在创建订单,请在任务日志中查看需要添加的 TXT 记录..." : "正在发起申请...", "info", 6000);
       try {
-        const d = await api("/ssl/acme/issue", { method: "POST", body: { site_id: site.id, staging, provider, method, alias, dns_alias: dnsAlias, dns_api: method === "dnsapi" } });
+        const d = await api("/ssl/acme/issue", { method: "POST", body: { site_id: site.id, staging, provider, method, alias, dns_alias: dnsAlias, dns_api: method === "dnsapi", domains: certDomains, wildcard } });
         m.close();
         taskModal(d.task_id, (status) => {
           if (status === "success") {
@@ -2130,9 +2185,15 @@ PAGES.apps = {
           html += '<td>' + statusTag + '</td>';
           var canManage = r.key === "nginx" || r.key === "openresty" ||
             r.key === "mysql" || r.key === "mariadb" || r.key === "postgresql" || r.key === "redis" ||
+            r.key === "python" || r.key === "nodejs" || r.key === "golang" ||
             /^php[0-9]*$/.test(r.key);
           html += '<td><div style="display:flex;gap:4px;flex-wrap:wrap">';
           if (canManage) html += '<button class="btn btn-sm btn-primary" data-app-mgr="' + r.key + '">管理</button>';
+          else if (r.key === "phpmyadmin" && r.status === "running") {
+            // 纯 Web 应用没有运行时管理对话框,「管理」= 打开其 Web 界面
+            var pmaURL = "http://" + location.hostname + ":" + ((r.params && r.params.Port) || "8082") + "/";
+            html += '<a class="btn btn-sm btn-primary" href="' + esc(pmaURL) + '" target="_blank" rel="noopener">管理</a>';
+          }
           html += '<button class="btn btn-sm btn-plain" data-app-cfg="' + r.key + '" data-app-name="' + esc(r.name) + '">配置</button>';
           var running = r.status === "running";
           var missing = r.status === "missing";
@@ -2142,7 +2203,11 @@ PAGES.apps = {
             var dis = (a === "start" && running) || (a !== "start" && missing) || (a === "stop" && !running);
             html += '<button class="btn btn-sm btn-plain" data-app-act="' + a + '" data-app-key="' + r.key + '"' + (dis ? " disabled" : "") + ">" + actNames[a] + '</button>';
           });
-          html += '<button class="btn btn-sm btn-danger-plain" data-app-act="uninstall" data-app-key="' + r.key + '"' + (missing ? ' title="清除安装记录' + '" data-clear="1"' : '') + '>' + (missing ? "清除" : "卸载") + '</button></div></td></tr>';
+          html += '<button class="btn btn-sm btn-danger-plain" data-app-act="uninstall" data-app-key="' + r.key + '"' + (missing ? ' title="清除安装记录' + '" data-clear="1"' : '') + '>' + (missing ? "清除" : "卸载") + '</button>';
+          if (r.status === "running" && (r.key === "python" || r.key === "nodejs" || r.key === "golang")) {
+            html += '<a class="btn btn-sm btn-plain" href="#/terminal?container=kun-' + esc(r.key) + '">终端</a>';
+          }
+          html += '</div></td></tr>';
         });
         html += '</tbody></table></div>';
       }
@@ -2876,11 +2941,14 @@ PAGES.databases = {
       if (pmaInst) pma = { url: "http://" + location.hostname + ":" + (pmaInst.params && pmaInst.params.Port || "8082") + "/", label: "phpMyAdmin" };
     } catch (e) {}
 
+    var isMySQLLike = this.tab.key === "mysql" || this.tab.key === "mariadb";
     var head = '<div class="waf-hero db-hero">' +
       '<div class="waf-hero-left">' + iconBox("database", 46) +
       '<div class="stat-meta"><h3>' + esc(typeNames[this.tab.key] || this.tab.key) + " " + stateTag(true, "运行中", "已停止") + "</h3>" +
       '<div class="stat-line db-stat-line">业务库 <b id="db-stat-dbs">-</b> 个 · 数据表 <b id="db-stat-tables">-</b> 张 · 备份 <b id="db-stat-baks">-</b> 份</div></div></div>' +
       '<div class="waf-hero-right">' +
+      (isMySQLLike ? '<button class="btn btn-sm btn-plain" id="db-users">' + I("key") + " 用户管理</button>" +
+      '<button class="btn btn-sm btn-plain" id="db-repl">' + I("refresh") + " 主从同步</button>" : "") +
       '<button class="btn btn-sm btn-plain" id="db-rootpwd">' + I("key") + " root 密码</button>" +
       (pma ? '<a class="btn btn-sm btn-plain" href="' + esc(pma.url) + '" target="_blank">' + I("external") + " " + esc(pma.label) + "</a>" : "") +
       '<button class="btn btn-sm btn-plain" id="db-refresh" title="刷新">' + I("refresh") + "</button></div></div>";
@@ -2902,6 +2970,10 @@ PAGES.databases = {
       '<div id="db-mgr" style="margin-top:14px"></div>';
 
     qs("#db-refresh", el).onclick = function() { self.render(el); };
+    var usersBtn = qs("#db-users", el);
+    if (usersBtn) usersBtn.onclick = function() { self.userMgr(); };
+    var replBtn = qs("#db-repl", el);
+    if (replBtn) replBtn.onclick = function() { self.replMgr(); };
     qs("#db-rootpwd", el).onclick = function() {
       var instName = typeNames[self.tab.key] || self.tab.key;
       var pm = modal({
@@ -2941,11 +3013,233 @@ PAGES.databases = {
 
     await this.loadDbList(el);
   },
+  /* ---- 数据库账号管理 ---- */
+  async userMgr() {
+    var self = this, key = this.tab.key;
+    var m = modal({ title: "数据库账号管理 · " + key, width: 760, body: '<div class="boot-loading" style="height:80px"><div class="spinner"></div></div>' });
+    var draw = async function() {
+      var users = [], mapRows = [];
+      try {
+        var rs = await Promise.all([
+          api("/db/" + key + "/users"),
+          api("/db/" + key + "/users/dbmap").catch(function() { return { rows: [] }; }),
+        ]);
+        users = rs[0] || [];
+        mapRows = rs[1].rows || [];
+      } catch (e) { qs(".modal-body", m.el).innerHTML = emptyState("warn", "加载失败", e.message); return; }
+      // 账号 → 权限范围(全部库 / 各库 + 摘要)
+      var byUser = {};
+      mapRows.forEach(function(x) {
+        var k = x.user + "@" + x.host;
+        (byUser[k] = byUser[k] || []).push(x);
+      });
+      var scopeSummary = function(u, h) {
+        var list = byUser[u + "@" + h] || [];
+        if (!list.length) return '<span class="help" style="margin:0">未授权(仅可登录)</span>';
+        return list.map(function(x) {
+          var scope = x.scope === "*" ? "*.*" : x.scope + ".*";
+          var pv = x.privs || "";
+          var tag = pv.indexOf("SELECT") >= 0 && pv.indexOf("INSERT") >= 0 && pv.indexOf("UPDATE") >= 0 && pv.indexOf("DELETE") >= 0 && pv.split(",").length >= 15 ? "全部" : (pv === "SELECT" ? "只读" : (pv.split(",").length >= 4 && pv.indexOf("SELECT") >= 0 ? "读写" : pv.split(",").slice(0, 3).join(",") + (pv.split(",").length > 3 ? "…" : "")));
+          return '<span class="mono" title="' + esc(pv || "USAGE") + '">' + esc(scope) + "(" + esc(tag) + ")</span>";
+        }).join("<br>");
+      };
+      var rows = users.map(function(u) {
+        return '<tr><td class="mono">' + esc(u.user) + '</td><td class="mono">' + esc(u.host) + '</td>' +
+          '<td style="font-size:12px">' + scopeSummary(u.user, u.host) + '</td>' +
+          '<td><div class="ops">' +
+          '<button class="btn btn-xs btn-plain" data-grant="' + esc(u.user) + '" data-host="' + esc(u.host) + '">授权</button>' +
+          '<button class="btn btn-xs btn-plain" data-grants="' + esc(u.user) + '" data-host="' + esc(u.host) + '">权限</button>' +
+          '<button class="btn btn-xs btn-plain" data-pwd="' + esc(u.user) + '" data-host="' + esc(u.host) + '">改密</button>' +
+          '<button class="btn btn-xs btn-danger-plain" data-del="' + esc(u.user) + '" data-host="' + esc(u.host) + '">删除</button></div></td></tr>';
+      }).join("");
+      qs(".modal-body", m.el).innerHTML =
+        '<div class="form-item"><div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<input class="input" id="nu-name" placeholder="用户名" style="width:150px">' +
+        '<input class="input" id="nu-host" placeholder="主机(留空=%)" style="width:160px">' +
+        '<input class="input" id="nu-pwd" placeholder="密码(6-64 位)" style="width:170px">' +
+        '<button class="btn btn-sm btn-primary" id="nu-add">创建账号</button></div>' +
+        '<div class="help">主机:%(任意主机)/localhost/指定 IP;应用连接时按「用户名@主机」匹配;创建后用「授权」给账号分配库权限</div></div>' +
+        (users.length ? '<table class="table"><thead><tr><th>用户名</th><th>主机</th><th>权限范围</th><th style="width:270px">操作</th></tr></thead><tbody>' + rows + '</tbody></table>' : emptyState("info", "暂无账号", "用上方表单创建第一个账号"));
+      var nu = qs("#nu-add", m.el);
+      if (nu) nu.onclick = async function() {
+        var user = qs("#nu-name", m.el).value.trim(), host = qs("#nu-host", m.el).value.trim(), pwd = qs("#nu-pwd", m.el).value;
+        if (!user || !pwd) { toast("请填写用户名和密码", "error"); return; }
+        try { await api("/db/" + key + "/users/create", { method: "POST", body: { user: user, host: host, password: pwd } }); toast("账号已创建,别忘了授权"); draw(); }
+        catch (e) { toast(e.message, "error", 6000); }
+      };
+      qsa("[data-del]", m.el).forEach(function(b) {
+        b.onclick = async function() {
+          if (!(await confirmDlg("确定删除账号 <b class=\"mono\">" + esc(b.getAttribute("data-del")) + "@" + esc(b.getAttribute("data-host")) + "</b>?", { danger: true }))) return;
+          try { await api("/db/" + key + "/users/delete", { method: "POST", body: { user: b.getAttribute("data-del"), host: b.getAttribute("data-host") } }); toast("已删除"); draw(); }
+          catch (e) { toast(e.message, "error", 6000); }
+        };
+      });
+      qsa("[data-pwd]", m.el).forEach(function(b) {
+        b.onclick = async function() {
+          var r = await promptDlg("修改密码 · " + b.getAttribute("data-del") + "@" + b.getAttribute("data-host"), [{ key: "pwd", label: "新密码", required: true }]);
+          if (!r) return;
+          try { await api("/db/" + key + "/users/password", { method: "POST", body: { user: b.getAttribute("data-pwd"), host: b.getAttribute("data-host"), password: r.pwd } }); toast("密码已修改"); }
+          catch (e) { toast(e.message, "error", 6000); }
+        };
+      });
+      qsa("[data-grants]", m.el).forEach(function(b) {
+        b.onclick = async function() {
+          try {
+            var d = await api("/db/" + key + "/users/grants?user=" + encodeURIComponent(b.getAttribute("data-grants")) + "&host=" + encodeURIComponent(b.getAttribute("data-host")));
+            modal({ title: "权限明细 · " + b.getAttribute("data-grants") + "@" + b.getAttribute("data-host"), width: 660,
+              body: '<pre class="mono" style="white-space:pre-wrap;background:var(--bg-2, #f6f7f9);padding:12px;border-radius:8px;max-height:50vh;overflow:auto">' + esc(d.grants || "(无)") + "</pre>" });
+          } catch (e) { toast(e.message, "error", 6000); }
+        };
+      });
+      qsa("[data-grant]", m.el).forEach(function(b) {
+        b.onclick = function() { self.userGrant(key, b.getAttribute("data-grant"), b.getAttribute("data-host")); };
+      });
+    };
+    draw();
+  },
+  async userGrant(key, user, host) {
+    var self = this;
+    var dbs = [];
+    try { dbs = (await api("/db/" + key + "/databases")) || []; } catch (e) { /* 读不到也能授全部库 */ }
+    var opts = ['<option value="*">全部库(*.*)</option>'].concat(dbs.filter(function(d) { return self.SYSTEM_DBS.indexOf(d) < 0; }).map(function(d) {
+      return '<option value="' + esc(d) + '">' + esc(d) + ".*</option>";
+    })).join("");
+    var privList = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "INDEX", "ALTER", "CREATE VIEW", "SHOW VIEW", "LOCK TABLES", "REFERENCES", "EXECUTE", "EVENT", "TRIGGER"];
+    var m = modal({ title: "授权 · " + user + "@" + host, width: 540,
+      body: '<div class="form-item"><label>数据库范围</label><select class="select" id="gr-db">' + opts + '</select><div class="help">范围为 库.*;跨库需求请按库分别授权</div></div>' +
+        '<div class="form-item"><label>权限模板</label><select class="select" id="gr-mode"><option value="rw">读写(增删改查+建表改表索引)</option><option value="ro">只读(仅 SELECT)</option><option value="all">全部权限</option><option value="custom">自定义</option></select></div>' +
+        '<div id="gr-custom" style="display:none"><div class="form-item"><label>自定义权限</label><div>' + privList.map(function(p) {
+          return '<label class="radio-line" style="display:inline-block;margin:0 12px 4px 0"><input type="checkbox" value="' + p + '"> ' + p + "</label>";
+        }).join("") + "</div></div></div>",
+      footer: '<button class="btn btn-plain" data-act="revoke">收回该库权限</button><button class="btn btn-plain" data-act="no">关 闭</button><button class="btn btn-primary" data-act="yes">应 用</button>' });
+    qs("#gr-mode", m.el).onchange = function() { qs("#gr-custom", m.el).style.display = this.value === "custom" ? "" : "none"; };
+    qs('[data-act="no"]', m.el).onclick = m.close;
+    qs('[data-act="revoke"]', m.el).onclick = async function() {
+      var db = qs("#gr-db", m.el).value;
+      if (!(await confirmDlg("收回 <b class=\"mono\">" + esc(user) + "@" + esc(host) + "</b> 在 <b class=\"mono\">" + (db === "*" ? "*.*" : db + ".*") + "</b> 上的全部权限?", { danger: true }))) return;
+      try { await api("/db/" + key + "/users/revoke", { method: "POST", body: { user: user, host: host, db: db } }); toast("已收回"); m.close(); }
+      catch (e) { toast(e.message, "error", 6000); }
+    };
+    qs('[data-act="yes"]', m.el).onclick = async function() {
+      var mode = qs("#gr-mode", m.el).value, db = qs("#gr-db", m.el).value;
+      var privs = [];
+      if (mode === "all") privs = ["ALL"];
+      else if (mode === "rw") privs = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "INDEX", "ALTER"];
+      else if (mode === "ro") privs = ["SELECT"];
+      else qsa("#gr-custom input:checked", m.el).forEach(function(x) { privs.push(x.value); });
+      if (!privs.length) { toast("请至少选择一项权限", "error"); return; }
+      try { await api("/db/" + key + "/users/grant", { method: "POST", body: { user: user, host: host, db: db, privs: privs } }); toast("授权成功"); m.close(); }
+      catch (e) { toast(e.message, "error", 6000); }
+    };
+  },
+  /* ---- 主从同步 ---- */
+  async replMgr() {
+    var self = this, key = this.tab.key;
+    var m = modal({ title: "主从同步 · " + key, width: 640, body: '<div class="boot-loading" style="height:80px"><div class="spinner"></div></div>' });
+    var st = null;
+    try { st = await api("/db/replication"); }
+    catch (e) { qs(".modal-body", m.el).innerHTML = emptyState("warn", "加载失败", e.message); return; }
+    var body = qs(".modal-body", m.el);
+    if (st && st.configured) {
+      var ioTag = st.io_running === "Yes" ? stateTag(true, "IO 正常") : stateTag(false, "IO " + (st.io_running || "-"));
+      var sqlTag = st.sql_running === "Yes" ? stateTag(true, "SQL 正常") : stateTag(false, "SQL " + (st.sql_running || "-"));
+      var behind = st.seconds_behind === "0" ? "0 秒(实时)" : (st.seconds_behind || "NULL(复制中断)") + " 秒";
+      body.innerHTML =
+        '<div class="settings-grid">' +
+        '<div><label>从库</label><div class="mono">' + esc(st.slave_host + ":" + st.slave_port) + "</div></div>" +
+        '<div><label>复制账号</label><div class="mono">' + esc(st.repl_user) + "</div></div>" +
+        '<div><label>IO / SQL 线程</label><div>' + ioTag + " " + sqlTag + "</div></div>" +
+        '<div><label>同步延迟</label><div>' + esc(behind) + "</div></div>" +
+        '<div><label>已初始化的库</label><div class="mono" style="font-size:12px">' + esc((st.db_list || []).join(" ") || "-") + "</div></div>" +
+        '<div><label>建立时间</label><div>' + esc(st.created || "-") + "</div></div></div>" +
+        (st.last_io_error ? '<div class="help" style="color:var(--danger);margin-top:8px">IO 错误: ' + esc(st.last_io_error) + "</div>" : "") +
+        (st.last_sql_error ? '<div class="help" style="color:var(--danger);margin-top:8px">SQL 错误: ' + esc(st.last_sql_error) + "</div>" : "") +
+        (st.healed ? '<div class="help" style="margin-top:8px">检测到主库 binlog 配置丢失(容器被重建),已自动补写并重启</div>' : "") +
+        '<div class="help" style="margin-top:8px">从库数据由 binlog 实时回放;主库容器重建后 binlog 配置会自动补写</div>';
+      m.el.querySelector(".modal-footer") && m.el.querySelector(".modal-footer").remove();
+      var foot = document.createElement("div");
+      foot.className = "modal-footer";
+      foot.innerHTML = '<button class="btn btn-plain" data-act="refresh">刷 新</button>' +
+        '<button class="btn btn-plain" data-act="stop">暂 停</button>' +
+        '<button class="btn btn-plain" data-act="start">恢 复</button>' +
+        '<button class="btn btn-danger-plain" data-act="reset">解除主从</button>' +
+        '<button class="btn btn-primary" data-act="close">关 闭</button>';
+      m.el.appendChild(foot);
+      foot.querySelector('[data-act="close"]').onclick = m.close;
+      foot.querySelector('[data-act="refresh"]').onclick = function() { self.replMgr(); m.close(); };
+      foot.querySelector('[data-act="stop"]').onclick = async function() {
+        try { await api("/db/replication/stop", { method: "POST", body: {} }); toast("复制已暂停"); self.replMgr(); m.close(); }
+        catch (e) { toast(e.message, "error", 6000); }
+      };
+      foot.querySelector('[data-act="start"]').onclick = async function() {
+        try { await api("/db/replication/start", { method: "POST", body: {} }); toast("复制已恢复"); self.replMgr(); m.close(); }
+        catch (e) { toast(e.message, "error", 6000); }
+      };
+      foot.querySelector('[data-act="reset"]').onclick = async function() {
+        if (!(await confirmDlg("解除主从同步?<br><span style='font-size:12px;color:var(--text-3)'>从库将停止并清除复制配置(已同步的数据保留);主库 binlog 与复制账号保留</span>", { danger: true }))) return;
+        try { await api("/db/replication/reset", { method: "POST", body: {} }); toast("主从已解除"); m.close(); }
+        catch (e) { toast(e.message, "error", 6000); }
+      };
+      return;
+    }
+    // 向导:主库=当前实例,从库=外部可达 MySQL/MariaDB
+    var dbs = [];
+    try { dbs = ((await api("/db/" + key + "/databases")) || []).filter(function(d) { return self.SYSTEM_DBS.indexOf(d) < 0; }); } catch (e) { /* 忽略 */ }
+    body.innerHTML =
+      '<div class="settings-hint" style="margin:0 0 10px">主库为当前实例(<b class="mono">' + esc(key) + '</b>),从库填一台<b>可从主库访问到的</b> MySQL/MariaDB(另一台服务器的库、本机另一个容器均可,需 root 密码)。未开启 binlog 时面板会写入配置并<b>重启数据库容器</b>(应用短暂断连)。</div>' +
+      '<div class="settings-grid">' +
+      '<div><label>从库地址(面板连从库用)</label><input class="input" id="rp-host" placeholder="如 192.168.1.10 或 db.example.com"></div>' +
+      '<div><label>从库端口</label><input class="input" id="rp-port" value="3306"></div>' +
+      '<div><label>从库 root 密码</label><input class="input" type="password" id="rp-spass"></div>' +
+      '<div><label>主库地址(从库回连主库用)</label><input class="input" id="rp-mhost" placeholder="同 Docker 网络填容器名如 kun-mysql;跨机填可达 IP"></div>' +
+      '<div><label>主库复制端口</label><input class="input" id="rp-mport" value="3306"></div>' +
+      '<div><label>复制账号</label><input class="input" id="rp-user" value="repl"></div>' +
+      '<div><label>复制账号密码</label><input class="input" id="rp-rpass" placeholder="6-64 位"></div></div>' +
+      '<div class="form-item" style="margin-top:10px"><label class="radio-line"><input type="checkbox" id="rp-init" checked> 全量初始化:把主库业务库导出导入从库(从库同名业务库必须为空)</label>' +
+      '<div id="rp-dbs" style="margin-top:6px;display:none">' + (dbs.length ? dbs.map(function(d) {
+        return '<label class="radio-line" style="display:inline-block;margin:0 12px 4px 0"><input type="checkbox" value="' + esc(d) + '" checked> ' + esc(d) + "</label>";
+      }).join("") : '<span class="help">主库暂无业务库</span>') + "</div></div>" +
+      '<div class="help" style="margin-top:6px">从库需与主库同系列(MySQL↔MySQL / MariaDB↔MariaDB)且配置文件里已设置 server-id(MySQL 5.7 必须,仅运行时设置不生效);主库端口需对从库可达——若主库端口绑定在 127.0.0.1,请先改绑内网/公网地址并配好防火墙(建议只放行从库 IP)。</div>';
+    qs("#rp-init", body).onchange = function() { qs("#rp-dbs", body).style.display = this.checked ? "" : "none"; };
+    m.el.querySelector(".modal-footer") && m.el.querySelector(".modal-footer").remove();
+    var foot = document.createElement("div");
+    foot.className = "modal-footer";
+    foot.innerHTML = '<button class="btn btn-plain" data-act="no">取 消</button><button class="btn btn-primary" data-act="yes">建立主从同步</button>';
+    m.el.appendChild(foot);
+    foot.querySelector('[data-act="no"]').onclick = m.close;
+    foot.querySelector('[data-act="yes"]').onclick = async function() {
+      var init = qs("#rp-init", body).checked;
+      var bodyReq = {
+        key: key,
+        slave_host: qs("#rp-host", body).value.trim(),
+        slave_port: qs("#rp-port", body).value.trim() || "3306",
+        master_host: qs("#rp-mhost", body).value.trim(),
+        master_port: qs("#rp-mport", body).value.trim() || "3306",
+        repl_user: qs("#rp-user", body).value.trim() || "repl",
+        repl_pass: qs("#rp-rpass", body).value,
+        slave_pass: qs("#rp-spass", body).value,
+        init_dump: init,
+      };
+      if (!bodyReq.master_host) { toast("请填写主库地址(从库回连主库用)", "error"); return; }
+      if (init) bodyReq.dbs = qsa("#rp-dbs input:checked", body).map(function(x) { return x.value; });
+      try {
+        var d = await api("/db/replication/setup", { method: "POST", body: bodyReq });
+        m.close();
+        taskModal(d.task_id, function(status) {
+          if (status === "success") { toast("主从同步已建立"); }
+        });
+      } catch (e) { toast(e.message, "error", 8000); }
+    };
+  },
   async loadDbList(el) {
     var self = this;
     var key = this.tab.key;
     var wrap = qs("#db-table-wrap", el);
     if (!wrap) return;
+    // 授权映射与库列表并行请求(互不依赖)
+    var dbmapP = (key === "mysql" || key === "mariadb")
+      ? api("/db/" + key + "/users/dbmap").catch(function() { return { rows: [] }; })
+      : null;
     var dbs = [];
     try { dbs = (await api("/db/" + key + "/databases")) || []; }
     catch (e) { wrap.innerHTML = emptyState("warn", "加载失败", e.message); return; }
@@ -2986,6 +3280,33 @@ PAGES.databases = {
         "</div>";
     } else {
       wrap.innerHTML = '<div class="db-empty">' + I("database") + '<p>还没有业务数据库</p><p class="help">点击右上角「添加数据库」创建' + (sys.length ? ';系统库 ' + sys.length + ' 个已隐藏' : "") + '</p></div>';
+    }
+
+    // 库卡片显示授权用户(账号↔库 授权映射;异步注入不阻塞卡片渲染)
+    if (dbmapP) {
+      Promise.resolve(dbmapP).then(function(d) {
+        var rows = d.rows || [];
+        if (!rows.length || !qs("[data-dbname]", wrap)) return;
+        var byDB = {}, globals = [];
+        rows.forEach(function(x) {
+          var who = x.user + "@" + x.host;
+          var pv = x.privs || "";
+          var n = pv ? pv.split(",").length : 0;
+          var tag = !n ? "" : (n >= 15 ? "全部" : (pv === "SELECT" ? "只读" : (n >= 4 ? "读写" : pv.split(",").slice(0, 2).join(","))));
+          if (x.scope === "*") { globals.push(who + (tag ? "(" + tag + ")" : "")); return; }
+          (byDB[x.scope] = byDB[x.scope] || []).push(who + (tag ? "(" + tag + ")" : ""));
+        });
+        qsa("[data-dbname]", wrap).forEach(function(card) {
+          var db = card.getAttribute("data-dbname");
+          if (self.SYSTEM_DBS.indexOf(db) >= 0) return;
+          var us = (byDB[db] || []).concat(globals);
+          if (!us.length) return;
+          var div = document.createElement("div");
+          div.className = "db-c-ausers";
+          div.innerHTML = "授权用户: " + us.map(function(x) { return esc(x); }).join("、");
+          card.appendChild(div);
+        });
+      }).catch(function() {});
     }
 
     var ssb = qs("#db-showsys", wrap);
@@ -3431,7 +3752,8 @@ PAGES.terminal = {
     var pageTitle = container ? "容器终端 · " + container : "Web 终端";
     var page = document.createElement("div");
     page.className = "term-page page-fade";
-    page.innerHTML = '<div class="term-header"><div class="left">' + I("terminal") + ' <b>' + esc(pageTitle) + '</b><span class="term-status off" id="t-status">连接中...</span></div><div style="display:flex;gap:10px;align-items:center"><button class="btn btn-sm btn-plain" id="t-reconnect">重连</button><button class="btn btn-sm btn-plain" id="t-clear">清屏</button></div></div><div class="term-body" id="t-body"><pre class="term-out" id="t-out"></pre></div><div class="term-input-hint">' + (container ? "输入 exit 退出容器" : "Ctrl+C 中断 · Ctrl+D 退出 · Tab 补全") + '</div>';
+    page.innerHTML = '<div class="term-header"><div class="left">' + I("terminal") + ' <b>' + esc(pageTitle) + '</b><span class="term-status off" id="t-status">连接中...</span></div><div style="display:flex;gap:10px;align-items:center"><button class="btn btn-sm btn-plain" id="t-reconnect">重连</button><button class="btn btn-sm btn-plain" id="t-clear">清屏</button></div></div><div class="term-body" id="t-body"><pre class="term-out" id="t-out"></pre></div><div class="term-input-hint">' + (container ? "输入 exit 退出容器" : "Ctrl+C 中断 · Ctrl+D 退出 · Tab 补全") + '</div>' +
+      (container ? "" : '<div style="padding:5px 14px;font-size:11.5px;color:var(--danger);background:color-mix(in srgb, var(--danger) 7%, transparent)">这是 root 权限终端:修改用户名 / SSH 配置 / 防火墙等误操作可能导致服务器失联,请谨慎执行</div>');
     el.appendChild(page);
     var out = qs("#t-out", page), status = qs("#t-status", page), body = qs("#t-body", page);
     var send = function(obj) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }.bind(this);
@@ -4131,7 +4453,7 @@ PAGES.ssh = {
         '<div class="settings-section"><div class="settings-section-title">修改 SSH 端口</div>' +
         '<div class="settings-row"><label>新端口</label><input class="input" id="ssh-port" type="number" value="' + st.port + '" style="max-width:160px">' +
         '<button class="btn btn-primary btn-sm" id="ssh-port-btn">修改端口</button></div>' +
-        '<div class="settings-hint">自动放行新端口(如防火墙已启用);修改后请用新端口重连。修改前请记牢当前端口。</div></div>' +
+        '<div class="settings-hint">自动放行新端口(如防火墙已启用);修改后请用新端口重连。修改前请记牢当前端口。<b>云主机(甲骨文/AWS 等)还需在云控制台安全列表放行新端口</b>,否则新连接会连不上(当前已连接会话不受影响,可随时回来改回)。</div></div>' +
         '<div class="settings-section"><div class="settings-section-title">登录加固</div>' +
         '<div class="settings-row"><label>Root 登录</label><select class="select" id="ssh-root" style="max-width:260px">' +
         rootOpt("yes", "允许 Root 直接登录(不安全)") +
@@ -4147,7 +4469,9 @@ PAGES.ssh = {
         '<div class="settings-section"><div class="settings-section-title">公钥管理(/root/.ssh/authorized_keys)</div>' +
         '<div class="settings-row"><label>添加公钥</label><textarea class="textarea" id="ssh-key-input" rows="2" placeholder="ssh-ed25519 AAAA... user@host" style="flex:1"></textarea></div>' +
         '<div class="settings-row"><label></label><button class="btn btn-primary btn-sm" id="ssh-key-add">添加公钥</button></div>' +
-        '<div id="ssh-keys">' + self.keyTable(st.keys || []) + "</div></div>";
+        '<div id="ssh-keys">' + self.keyTable(st.keys || []) + "</div></div>" +
+        '<div class="settings-section"><div class="settings-section-title">SSH 防爆破(失败次数过多自动封禁)</div>' +
+        '<div id="f2b-box">' + skeletonTable(2, 2, 90) + "</div></div>";
       el.innerHTML = html;
 
       qs("#ssh-port-btn", el).onclick = async function() {
@@ -4188,6 +4512,65 @@ PAGES.ssh = {
           } catch (e) { toast(e.message, "error"); }
         };
       });
+      // SSH 防爆破(fail2ban)状态与操作
+      (async function() {
+        var fbox = el.querySelector("#f2b-box");
+        if (!fbox) return;
+        var d;
+        try { d = await api("/ssh/fail2ban"); }
+        catch (e) { fbox.innerHTML = emptyState("warn", "加载失败", e.message); return; }
+        var enableBtn = function(label) {
+          return '<button class="btn btn-primary btn-sm" id="f2b-enable">' + label + "</button>" +
+            '<div class="settings-hint">安装 fail2ban 并按当前 SSH 端口(' + (d.port || st.port) + ")启用防爆破:同一 IP 登录失败次数过多自动封禁。需服务器可访问发行版软件源。部署在后台任务中执行。</div>";
+        };
+        if (!d.installed) {
+          fbox.innerHTML = '<div class="settings-row"><label>状态</label><span class="tag">未安装</span></div>' + enableBtn("一键安装并启用");
+        } else if (!d.jail_active) {
+          fbox.innerHTML = '<div class="settings-row"><label>状态</label><span class="tag tag-info">fail2ban 已安装,SSH 防爆破未启用</span></div>' + enableBtn("一键启用");
+        } else {
+          var chips = (d.banned || []).map(function(ip) {
+            return '<span class="mono" style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-2);border-radius:6px;padding:2px 8px">' + esc(ip) +
+              ' <i data-unban="' + esc(ip) + '" style="cursor:pointer;color:var(--danger);font-style:normal;font-weight:bold" title="解封该 IP">×</i></span>';
+          }).join(" ");
+          fbox.innerHTML = '<div class="settings-row"><label>状态</label><span class="tag tag-success">防护中</span>' +
+            '<span class="help" style="margin:0 0 0 12px">失败 ' + d.max_retry + " 次 / " + d.findtime + " 分钟内 → 封禁 " + d.bantime + " 分钟 · 监控端口 " + (d.port || st.port) + "</span></div>" +
+            '<div class="settings-row"><label>当前封禁</label><div style="display:flex;gap:6px;flex-wrap:wrap">' + (chips || '<span class="help" style="margin:0">暂无封禁 IP</span>') + "</div></div>" +
+            '<div class="settings-row"><label>调整参数</label><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+            '<input class="input" id="f2b-retry" type="number" value="' + d.max_retry + '" style="width:120px" title="最大失败次数"><span class="help" style="margin:0">次失败</span>' +
+            '<input class="input" id="f2b-find" type="number" value="' + d.findtime + '" style="width:110px" title="统计窗口(分钟)"><span class="help" style="margin:0">分钟内</span>' +
+            '<input class="input" id="f2b-ban" type="number" value="' + d.bantime + '" style="width:110px" title="封禁时长(分钟)"><span class="help" style="margin:0">封禁分钟</span>' +
+            '<button class="btn btn-sm btn-primary" id="f2b-save">保存参数</button></div>' +
+            '<div class="help">已用 <b>' + (d.banned || []).length + "</b> 个 IP 被封禁;点击 IP 旁的 × 可手动解封</div></div>";
+        }
+        var en = el.querySelector("#f2b-enable");
+        if (en) en.onclick = async function() {
+          if (!(await confirmDlg("安装并启用 SSH 防爆破(fail2ban)?<br><span style='font-size:12px;color:var(--text-3)'>同一 IP 登录失败次数过多将自动封禁;需服务器能访问发行版软件源;部署在后台任务中执行</span>"))) return;
+          en.disabled = true; en.textContent = "部署中...";
+          try {
+            await api("/ssh/fail2ban/enable", { method: "POST", body: { max_retry: 5, findtime_min: 10, bantime_min: 120 } });
+            toast("SSH 防爆破已启用");
+            self.render(el);
+          } catch (e) { toast(e.message, "error", 8000); en.disabled = false; en.textContent = "一键安装并启用"; }
+        };
+        var sv = el.querySelector("#f2b-save");
+        if (sv) sv.onclick = async function() {
+          var bodyReq = {
+            max_retry: Number(el.querySelector("#f2b-retry").value) || 5,
+            findtime_min: Number(el.querySelector("#f2b-find").value) || 10,
+            bantime_min: Number(el.querySelector("#f2b-ban").value) || 120,
+          };
+          try { await api("/ssh/fail2ban/params", { method: "POST", body: bodyReq }); toast("参数已更新"); self.render(el); }
+          catch (e) { toast(e.message, "error", 6000); }
+        };
+        qsa("[data-unban]", el).forEach(function(x) {
+          x.onclick = async function() {
+            var ip = x.getAttribute("data-unban");
+            if (!(await confirmDlg("解封 <b class='mono'>" + esc(ip) + "</b>?", { danger: true }))) return;
+            try { await api("/ssh/fail2ban/unban", { method: "POST", body: { ip: ip } }); toast("已解封 " + ip); self.render(el); }
+            catch (e) { toast(e.message, "error", 6000); }
+          };
+        });
+      })();
     }).catch(function(e) {
       el.innerHTML = emptyState("warn", "无法读取 SSH 配置", e.message);
     });
@@ -4331,10 +4714,22 @@ PAGES.settings = {
         '<div id="ps-ssl-status" class="help" style="margin:0 0 10px">读取证书信息 ...</div>' +
         '<div style="margin:-4px 0 10px"><button class="btn btn-primary btn-sm" id="ps-ssl-le">' + I("bolt") + ' 申请 Let\'s Encrypt 证书(自动部署与续期)</button></div>' +
         '<div class="form-item"><label style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
-        '<input type="checkbox" id="ps-ssl-on" ' + (!sslState.hasCert || sslState.enabled ? "checked" : "") + '> 启用面板 HTTPS 访问</label></div>' +
+        '<input type="checkbox" id="ps-ssl-on" ' + (sslState.enabled ? "checked" : "") + '> 启用面板 HTTPS 访问</label>' +
+        (!sslState.enabled && !sslState.hasCert ? '<span class="help" style="margin:0 0 0 10px">生成/上传证书后勾选此项启用;未勾选时保存仅保存证书</span>' : "") + '</div>' +
         '<div class="form-item"><label>上传证书(PEM)</label>' +
         '<textarea class="textarea mono" id="ps-cert" rows="3" placeholder="证书内容(BEGIN CERTIFICATE ...),留空沿用已存证书"></textarea>' +
         '<textarea class="textarea mono" id="ps-key" rows="3" placeholder="私钥内容(BEGIN PRIVATE KEY ...)" style="margin-top:6px"></textarea></div>' +
+        '<div class="settings-row" style="margin-top:10px"><label>从服务器文件导入(与粘贴内容二选一)</label></div>' +
+        '<div class="settings-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<span class="help" style="margin:0;width:64px">证书文件</span>' +
+        '<input class="input mono" id="ps-cert-path" placeholder="如 /etc/ssl/private/fullchain.pem" style="flex:1;min-width:200px">' +
+        '<button class="btn btn-plain btn-sm" id="ps-cert-browse">浏览</button></div>' +
+        '<div class="settings-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<span class="help" style="margin:0;width:64px">私钥文件</span>' +
+        '<input class="input mono" id="ps-key-path" placeholder="如 /etc/ssl/private/privkey.pem" style="flex:1;min-width:200px">' +
+        '<button class="btn btn-plain btn-sm" id="ps-key-browse">浏览</button></div>' +
+        '<div class="settings-row"><label>从已有站点证书导入</label><select class="select" id="ps-site-cert" style="max-width:100%"><option value="">选择站点证书…</option></select>' +
+        '<div class="help">列出「网站」页已申请/上传的证书,选择后自动填入上方文件路径;导入为复制语义,之后源文件变动不影响面板</div></div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
         '<button class="btn btn-primary btn-sm" id="ps-ssl-save">保存并重启面板</button>' +
         '<button class="btn btn-plain btn-sm" id="ps-selfsign">一键生成自签证书</button></div>' +
@@ -4379,9 +4774,10 @@ PAGES.settings = {
       };
       // 面板 HTTPS
       var st = window.__psSSL || {};
-      // 已启用时锁死复选框(防止误触关闭把自己锁在外面),改用显式关闭按钮
+      // 已启用且有证书时锁死复选框(防止误触关闭把自己锁在外面),改用显式关闭按钮;
+      // 已启用但证书缺失(异常态)时不禁用——允许取消勾选并保存以清除启用状态
       var sslCheckbox = body.querySelector("#ps-ssl-on");
-      if (st.enabled && sslCheckbox) {
+      if (st.enabled && st.hasCert && sslCheckbox) {
         sslCheckbox.disabled = true;
         var closeSslBtn = document.createElement("button");
         closeSslBtn.className = "btn btn-danger-plain btn-sm";
@@ -4399,6 +4795,37 @@ PAGES.settings = {
         };
         sslCheckbox.parentNode.appendChild(closeSslBtn);
       }
+      // 从服务器文件导入:浏览按钮(目录+文件逐级选择)
+      var wireBrowse = function(btnId, inputId) {
+        var btn = body.querySelector(btnId);
+        if (!btn) return;
+        btn.onclick = function() {
+          serverFilePicker(function(p) { body.querySelector(inputId).value = p; });
+        };
+      };
+      wireBrowse("#ps-cert-path", "#ps-cert-browse");
+      wireBrowse("#ps-key-path", "#ps-key-browse");
+      // 从已有站点证书导入:下拉选择后自动填入文件路径
+      (async function() {
+        var sel = body.querySelector("#ps-site-cert");
+        if (!sel) return;
+        try {
+          var list = (await api("/panel/ssl/site-certs")) || [];
+          if (list.length) {
+            sel.innerHTML = '<option value="">选择站点证书…</option>' + list.map(function(c) {
+              return '<option value="' + esc(c.id) + '" data-cert="' + esc(c.cert_path) + '" data-key="' + esc(c.key_path) + '">' +
+                esc(c.domains || c.id) + "(剩 " + (c.expire || "-") + ")</option>";
+            }).join("");
+          }
+        } catch (e) { /* 下拉不可用不影响手填 */ }
+        sel.onchange = function() {
+          var o = sel.options[sel.selectedIndex];
+          if (o && o.value) {
+            body.querySelector("#ps-cert-path").value = o.getAttribute("data-cert") || "";
+            body.querySelector("#ps-key-path").value = o.getAttribute("data-key") || "";
+          }
+        };
+      })();
       // 当前证书状态卡:类别/域名/有效期(自签、上传、LE 申请的都显示)
       (async function() {
         var box = body.querySelector("#ps-ssl-status");
@@ -4493,15 +4920,46 @@ PAGES.settings = {
         this.disabled = true; this.textContent = "生成中...";
         try {
           await api("/panel/ssl/selfsign", { method: "POST", body: {} });
+          // 同步前端状态:证书已存在,保存守卫与复选框都要更新
+          sslState.hasCert = true;
+          window.__psSSL.hasCert = true;
+          var cb = body.querySelector("#ps-ssl-on");
+          if (cb && !sslState.enabled) cb.checked = true;
+          this.textContent = "重新生成自签证书";
+          this.disabled = false;
+          var box = body.querySelector("#ps-ssl-status");
+          if (box) box.innerHTML = "自签证书已生成(KunPanel / 本机 IP,10 年):点击「立即启用 HTTPS 并重启」一键启用,或勾选「启用面板 HTTPS 访问」后保存";
+          // 一键启用:复用已生成的证书文件(后端留空即沿用),重启后面板自动跳转 https
+          var enableBtn = body.querySelector("#ps-ssl-enable-now");
+          if (!enableBtn) {
+            var eb = document.createElement("button");
+            eb.className = "btn btn-primary btn-sm";
+            eb.id = "ps-ssl-enable-now";
+            eb.textContent = "立即启用 HTTPS 并重启";
+            eb.onclick = async function() {
+              if (!(await confirmDlg("面板将以 <b>HTTPS</b> 模式重启,重启后浏览器会自动跳转到 <b>https://</b> 访问面板<br><span style='font-size:12px;color:var(--text-3)'>自签证书浏览器会提示不受信任;若证书异常,面板会自动回退 HTTP,不会失联</span>"))) return;
+              try {
+                await api("/panel/ssl", { method: "POST", body: { enabled: true, cert: "", key: "" } });
+                toast("保存成功,面板正在重启,即将跳转 https ...", "info", 5000);
+                setTimeout(function() {
+                  location.href = location.href.replace(/^http:/, "https:");
+                  location.reload();
+                }, 2500);
+              } catch (e) { toast(e.message, "error", 8000); }
+            };
+            this.parentNode.appendChild(eb);
+          }
           toast("自签证书已生成");
-          this.textContent = "已生成 ✓";
         } catch (e) { toast(e.message, "error", 6000); this.disabled = false; }
       };
       qs("#ps-ssl-save", body).onclick = async function() {
         const on = sslCheckbox ? sslCheckbox.checked : qs("#ps-ssl-on", body).checked;
         const cert = qs("#ps-cert", body).value.trim();
         const key = qs("#ps-key", body).value.trim();
-        if (on && !st.hasCert && !cert) { toast("请先上传证书或生成自签证书", "error"); return; }
+        const certPath = qs("#ps-cert-path", body).value.trim();
+        const keyPath = qs("#ps-key-path", body).value.trim();
+        if ((certPath !== "") !== (keyPath !== "")) { toast("证书文件与私钥文件需同时填写", "error"); return; }
+        if (on && !st.hasCert && !cert && certPath === "") { toast("请先上传证书或生成自签证书", "error"); return; }
         // 跳转协议必须跟随开关方向:关 HTTPS 后仍跳 https 会把自己失联
         if (on) {
           if (!(await confirmDlg("面板将以 <b>HTTPS</b> 模式重启,重启后请使用 <b>https://</b> 访问面板<br><span style='font-size:12px;color:var(--text-3)'>自签证书浏览器会提示不受信任;若证书异常,面板会自动回退 HTTP,不会失联</span>", { danger: false }))) return;
@@ -4509,7 +4967,7 @@ PAGES.settings = {
           if (!(await confirmDlg("确定关闭面板 HTTPS 吗?面板重启后将回退 <b>HTTP</b>,请改用 <b>http://</b> 访问面板", { danger: true }))) return;
         }
         try {
-          await api("/panel/ssl", { method: "POST", body: { enabled: on, cert: cert, key: key } });
+          await api("/panel/ssl", { method: "POST", body: { enabled: on, cert: cert, key: key, cert_path: certPath, key_path: keyPath } });
           toast("保存成功,面板正在重启...", "info", 5000);
           setTimeout(function() {
             location.href = on
