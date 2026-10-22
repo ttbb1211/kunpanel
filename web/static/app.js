@@ -99,6 +99,15 @@ const App = {
       localStorage.setItem(USER_KEY, d.username);
       if (d.panel) this.panelName = d.panel;
       toast("欢迎回来, " + d.username);
+      // 清掉退出登录时留下的 #/login(用 replaceState,不触发 hashchange 避免二次渲染)。
+      // 不清理的话 URL 停在 #/login:顶栏 startMonitor 的跳过条件只认 "#/dashboard",
+      // 会与概览页自身的定时器形成双倍轮询。
+      try {
+        const h = location.hash;
+        if (!h || h === "#/login" || h === "#/") {
+          history.replaceState(null, "", location.pathname + location.search + "#/dashboard");
+        }
+      } catch (e) { /* 老浏览器不支持 replaceState 时忽略 */ }
       this.renderLayout();
       this.bindRouter();
       this.route();
@@ -401,8 +410,14 @@ const App = {
     PAGES.terminal.cleanup && PAGES.terminal.cleanup();
 
     const rawKey = (location.hash || "#/dashboard").replace(/^#\//, "").split("?")[0] || "dashboard";
-    const key = ROUTE_ALIAS[rawKey] || rawKey;
-    const page = PAGES[key] || PAGES.dashboard;
+    const aliasKey = ROUTE_ALIAS[rawKey] || rawKey;
+    // ★ 未知路由(退出登录后残留的 #/login、手输的脏 hash 等)一律回落到概览。
+    //   key 必须是「实际渲染的页面键」,不能是 hash 原值:页面渲染完会用
+    //   el.dataset.route !== "<本页键>" 丢弃过期异步结果。若 dataset.route 拿到
+    //   hash 原值(如 "login"),而实际渲染的是 dashboard,概览的守卫就会误判为
+    //   "已切走",于是骨架屏永不替换 → 退出后重登卡在概览。
+    const key = PAGES[aliasKey] ? aliasKey : "dashboard";
+    const page = PAGES[key];
     qsa(".menu-item").forEach((n) => n.classList.toggle("active", n.dataset.key === key));
     const titleEl = qs("#page-title");
     if (titleEl) titleEl.textContent = page.title;
