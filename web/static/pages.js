@@ -217,18 +217,18 @@ PAGES.websites = {
             <button class="btn btn-sm btn-plain" id="site-logs">${I("logs")} 站点日志</button>
             <button class="btn btn-sm btn-plain" id="site-ssl">${I("key")} SSL 证书</button><button class="btn btn-sm btn-plain" id="site-stats">${I("pulse")} 访问统计</button><button class="btn btn-sm btn-danger-plain" id="site-batch-del" style="display:none">${I("trash")} 批量删除</button><button class="btn btn-sm btn-primary" id="btn-add-site">${I("plus")} 创建网站</button></div></div>
         <div id="site-table">${tableHTML([
-          { title: '<input type="checkbox" id="site-sel-all" title="全选">', width: "36px", render: (r) => '<input type="checkbox" class="site-sel" data-id="' + r.id + '">' },
-          { title: "域名", render: (r) => '<span class="ellipsis" title="' + esc(r.domain) + '">' + esc(r.domain) + "</span>" },
-          { title: "类型", width: "100px", render: (r) => (r.type === "proxy" ? '<span class="tag tag-primary">反向代理</span>' : r.type === "php" ? '<span class="tag tag-purple">PHP 站点</span>' : '<span class="tag tag-success">静态站点</span>') },
-          { title: "端口", width: "70px", render: (r) => r.port },
-          { title: "根目录 / 目标", width: "300px", render: (r) => {
+          { title: '<input type="checkbox" id="site-sel-all" title="全选">', width: "36px", cls: "col-sel", render: (r) => '<input type="checkbox" class="site-sel" data-id="' + r.id + '">' },
+          { title: "域名", width: "200px", cls: "col-dom", render: (r) => '<span class="ellipsis" title="' + esc(r.domain) + '">' + esc(r.domain) + "</span>" },
+          { title: "类型", width: "92px", cls: "col-type", render: (r) => (r.type === "proxy" ? '<span class="tag tag-primary">反向代理</span>' : r.type === "php" ? '<span class="tag tag-purple">PHP 站点</span>' : '<span class="tag tag-success">静态站点</span>') },
+          { title: "端口", width: "60px", cls: "col-port", render: (r) => r.port },
+          { title: "根目录 / 目标", width: "175px", cls: "col-root", render: (r) => {
               // 反代站显示上游;静态/PHP 站显示根目录路径,点击直达文件管理器该目录
               if (r.type === "proxy") return '<span class="mono ellipsis" title="' + esc(r.proxy_to || "") + '">' + esc(r.proxy_to || "-") + "</span>";
               if (!r.root) return "-";
               return '<span class="mono ellipsis root-link" data-root="' + esc(r.root) + '" title="点击打开文件管理">' + esc(r.root) + "</span>";
             } },
-          { title: "状态", width: "110px", render: (r) => '<span class="switch ' + (r.enabled ? "on" : "") + '" data-id="' + r.id + '"></span>' },
-          { title: "HTTPS", width: "150px", render: (r) => {
+          { title: "状态", width: "84px", cls: "col-state", render: (r) => '<span class="switch ' + (r.enabled ? "on" : "") + '" data-id="' + r.id + '"></span>' },
+          { title: "HTTPS", width: "105px", cls: "col-ssl", render: (r) => {
               if (!r.ssl_cert_id) return '<span class="tag tag-info">未启用</span>';
               const c = certMap[r.ssl_cert_id];
               if (!c) return '<span class="tag tag-warning">证书缺失</span>';
@@ -238,8 +238,8 @@ PAGES.websites = {
               if (days < 30) return '<span class="tag tag-warning">' + days + " 天后到期</span>";
               return '<span class="tag tag-success">' + days + " 天</span>";
             } },
-          { title: "创建时间", width: "110px", render: (r) => { var d = new Date(r.created_at); return isNaN(d) ? "-" : (d.getMonth()+1 + "/" + d.getDate() + " " + String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0")); } },
-          { title: "操作", width: "330px", render: (r) =>
+          { title: "创建时间", width: "96px", cls: "col-created", render: (r) => { var d = new Date(r.created_at); return isNaN(d) ? "-" : (d.getMonth()+1 + "/" + d.getDate() + " " + String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0")); } },
+          { title: "操作", width: "250px", cls: "col-ops", render: (r) =>
             '<div class="ops"><button class="btn btn-xs btn-primary" data-files="' + r.id + '" title="管理网站文件">' + I("folderOpen") + ' 文件</button>' +
             '<button class="btn btn-xs btn-plain" data-visit="' + r.id + '">访问</button>' +
             '<button class="btn btn-xs btn-plain" data-ssl="' + r.id + '">HTTPS</button>' +

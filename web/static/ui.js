@@ -648,11 +648,11 @@ function stateTag(on, onText, offText) {
 function tableHTML(cols, rows, emptyTip, emptyIcon) {
   if (!rows || !rows.length) return emptyState(emptyIcon || "inbox", emptyTip || "暂无数据");
   let html = '<div class="table-wrap"><table class="table"><thead><tr>';
-  for (const c of cols) html += "<th" + (c.width ? ' style="width:' + c.width + '"' : "") + ">" + c.title + "</th>";
+  for (const c of cols) html += "<th" + (c.width ? ' style="width:' + c.width + '"' : "") + (c.cls ? ' class="' + c.cls + '"' : "") + ">" + c.title + "</th>";
   html += "</tr></thead><tbody>";
   for (const row of rows) {
     html += "<tr>";
-    for (const c of cols) html += "<td>" + (c.render(row) != null ? c.render(row) : "") + "</td>";
+    for (const c of cols) html += "<td" + (c.cls ? ' class="' + c.cls + '"' : "") + ">" + (c.render(row) != null ? c.render(row) : "") + "</td>";
     html += "</tr>";
   }
   html += "</tbody></table></div>";

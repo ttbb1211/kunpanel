@@ -1218,9 +1218,15 @@ tr.fm-selected { background: var(--primary-light); }
 #site-table .table { table-layout: fixed; }
 #site-table th, #site-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #site-table td { padding: 10px 12px; }
-#site-table .ops { flex-wrap: nowrap; gap: 4px; overflow: visible; }
-#site-table .ops .btn-xs { padding: 3px 9px; font-size: 11.5px; }
+#site-table .ops { flex-wrap: nowrap; gap: 2px; overflow: visible; }
+#site-table .ops .btn-xs { padding: 3px 6px; font-size: 11px; }
 #site-table .switch { transform: scale(.9); }
+/* 窄屏逐级隐藏次要列(信息在「设置」里仍可见)。★ table-layout:fixed 下列的
+   min-width 无效,所以「域名」列必须在 pages.js 里给显式 width,否则容器一窄
+   就会被压成 0px —— 这正是 1366 屏「域名列消失」的根因。 */
+@media (max-width: 1499px) { #site-table .col-created { display: none; } }
+@media (max-width: 1359px) { #site-table .col-port { display: none; } }
+@media (max-width: 1199px) { #site-table .col-ssl { display: none; } }
 .tag-purple { background: #f3e8ff; color: #7c3aed; }
 
 /* ================= 创建网站:类型卡片 ================= */
