@@ -193,7 +193,7 @@ func wafOn() bool {
 // 只要 writeConf 生成的 conf 结构发生变化(新增/调整指令、新增 location 等),就把它 +1;
 // 面板启动时据此判断是否要把存量站点 conf 重新生成一遍。
 // 注意:不要无条件重建 —— 那会在每次重启时覆盖用户对站点 conf 的手工调整。
-const confSchemaVersion = 3
+const confSchemaVersion = 4
 
 // ConfSchemaVersion 当前站点配置模板版本(供日志与排查)
 func ConfSchemaVersion() int { return confSchemaVersion }
@@ -1112,6 +1112,8 @@ func writeConf(s *Site) error {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
