@@ -1037,15 +1037,24 @@ func installKunfaka(dir string, params map[string]string) error {
 	}
 	src := filepath.Join(dir, "src")
 	_ = os.RemoveAll(src)
-	_ = os.MkdirAll(src, 0o755)
-	// gitee archive 顶层是 <repo>-main/,用 --strip-components=1 去掉
-	if out, err := exec.Command("tar", "-xzf", tgz, "-C", src, "--strip-components=1").CombinedOutput(); err != nil {
+	raw := filepath.Join(tmp, "raw")
+	_ = os.MkdirAll(raw, 0o755)
+	if out, err := exec.Command("tar", "-xzf", tgz, "-C", raw).CombinedOutput(); err != nil {
 		_ = os.RemoveAll(tmp)
 		return fmt.Errorf("解压失败: %v %s", err, strings.TrimSpace(string(out)))
 	}
-	if _, err := os.Stat(filepath.Join(src, "Dockerfile")); err != nil {
+	// 归档顶层结构两种都见过:gitee 是单层 <repo>-main/ 包一层,CNB 是文件直接散在根上
+	root := raw
+	if ents, err := os.ReadDir(raw); err == nil && len(ents) == 1 && ents[0].IsDir() {
+		root = filepath.Join(raw, ents[0].Name())
+	}
+	if _, err := os.Stat(filepath.Join(root, "Dockerfile")); err != nil {
 		_ = os.RemoveAll(tmp)
 		return fmt.Errorf("源码包缺少 Dockerfile,无法构建镜像")
+	}
+	if err := os.Rename(root, src); err != nil {
+		_ = os.RemoveAll(tmp)
+		return fmt.Errorf("源码就位失败: %v", err)
 	}
 	_ = os.RemoveAll(tmp)
 	return nil
