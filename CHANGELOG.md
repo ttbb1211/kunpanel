@@ -3,6 +3,21 @@
 所有重要变更都会记录在此文件中。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v2.96.4] - 2026-10-27
+
+### 修复:应用商店 4 个失效应用（作者撤出 GitHub 后遗症）
+
+作者撤出 GitHub 并清空 Docker Hub 命名空间 `kungec` 后,商店里 4 个应用的原地址全部 404。
+按"能救则救、救不了下架"处理:
+
+- **坤支付**:`build` 源由 `github.com/kungec/kunpay.git` 改为 `gitee.com/NEXAB/kunpay.git`
+- **坤发卡**:改为源码构建 —— 安装时从 `gitee.com/NEXAB/kunfaka` 下载源码包解压到 `./src`,
+  compose 用 `build: ./src`（上游自 v2.96 起不再发布 Docker Hub 预构建镜像）;
+  同时去掉 `database.sql` 下载与挂载（新版首次访问走 `install.php` 安装向导）
+- **坤影CMS / NAT Cloud**:作者新账号下无对应仓库,从应用商店移除
+  （连带删除 `installKunyingCMS` / `installNatCloud` / `p1ShTmp`）
+- `downloadFile` 单文件上限 10MB → 64MB（坤发卡源码包 7.9MB,留余量）
+
 ## [v2.96.3] - 2026-10-27
 
 ### 修复:一键更新取错源、重启覆盖站点配置(定制 fork 专用)

@@ -1,12 +1,12 @@
 package appstore
 
 import (
-	"net/http"
-	"os/exec"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -382,18 +382,22 @@ func builtinTemplates() []Template {
 			},
 			WebURL: func(p map[string]string) string { return fmt.Sprintf("http://<IP>:%s", pval(p, "Port", "8081")) },
 		},
-        {
-            Key: "kunfaka", Name: "坤发卡", Category: "建站", Icon: "store", Version: "latest",
-            Desc: "全自动发卡系统:7×24 无人值守,6 大支付通道(含 USDT 免挂),秒级自动发货,内置应用商店+5 套主题",
-            Params: []Param{
-                {Key: "Port", Label: "监听端口", Default: "8080"},
-                {Key: "DBRootPassword", Label: "MySQL root 密码", Default: "Kun@FK2026"},
-            },
-            ComposeFrom: func(p map[string]string) string {
-                port := pval(p, "Port", "8080")
-                return `services:
-  kunfaka:
-    image: kungec/kunfaka:latest
+		{
+			Key: "kunfaka", Name: "坤发卡", Category: "建站", Icon: "store", Version: "latest",
+			Desc: "全自动发卡系统:7×24 无人值守,6 大支付通道(含 USDT 免挂),秒级自动发货,内置应用商店+5 套主题",
+			Params: []Param{
+				{Key: "Port", Label: "监听端口", Default: "8080"},
+				{Key: "DBRootPassword", Label: "MySQL root 密码", Default: "Kun@FK2026"},
+			},
+			ComposeFrom: func(p map[string]string) string {
+				port := pval(p, "Port", "8080")
+				// 上游自 v2.96 起不再发布 Docker Hub 预构建镜像,改为仓库自带
+				// Dockerfile 本地构建(见 installKunfaka 下载源码到 ./src);
+				// 首次安装构建约 3-6 分钟,之后走镜像层缓存
+				return `services:
+  app:
+    build: ./src
+    image: kunfaka-local:latest
     container_name: kun-kunfaka
     restart: unless-stopped
     ports:
@@ -405,11 +409,14 @@ func builtinTemplates() []Template {
       - ./uploads:/var/www/html/uploads
     depends_on:
       - db
-  kunfaka-cron:
-    image: kungec/kunfaka:latest
+  cron:
+    build: ./src
+    image: kunfaka-local:latest
     container_name: kun-kunfaka-cron
     restart: unless-stopped
     command: ["sh", "-c", "while true; do php /var/www/html/cron.php; sleep 60; done"]
+    environment:
+      TZ: Asia/Shanghai
     volumes:
       - ./data:/var/www/html/data
       - ./uploads:/var/www/html/uploads
@@ -427,71 +434,27 @@ func builtinTemplates() []Template {
       TZ: Asia/Shanghai
     volumes:
       - ./db_data:/var/lib/mysql
-      - ./database.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
 `
-            },
-            WebURL: func(p map[string]string) string {
-                return "http://<IP>:" + pval(p, "Port", "8080")
-            },
-        },
-        {
-            Key: "nat-cloud", Name: "NAT Cloud", Category: "建站", Icon: "cloud", Version: "latest",
-            Desc: "NAT VPS 销售与自动化开通系统:套餐销售/LXC 节点全自动交付/计费/工单/实名/返利/开放 API",
-            Params: []Param{
-                {Key: "Port", Label: "监听端口", Default: "8082"},
-                {Key: "DBRootPassword", Label: "MySQL root 密码", Default: "Kun@NC2026"},
-            },
-            ComposeFrom: func(p map[string]string) string {
-                port := pval(p, "Port", "8082")
-                return `services:
-  web:
-    image: php:8.2-apache
-    container_name: natcloud-web
-    ports:
-      - "` + port + `:80"
-    volumes:
-      - ./app:/var/www/html/app
-      - ./public:/var/www/html
-      - ./cron:/var/www/html/cron
-      - nc_data:/var/www/html/data
-    depends_on:
-      - db
-    restart: unless-stopped
-  db:
-    image: mariadb:10.11
-    container_name: natcloud-db
-    environment:
-      MYSQL_DATABASE: natcloud
-      MYSQL_ROOT_PASSWORD: ` + pval(p, "DBRootPassword", "Kun@NC2026") + `
-      TZ: Asia/Shanghai
-    volumes:
-      - nc_db:/var/lib/mysql
-      - ./schema.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-    restart: unless-stopped
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci
-volumes:
-  nc_data:
-  nc_db:
-`
-            },
-            WebURL: func(p map[string]string) string {
-                return "http://<IP>:" + pval(p, "Port", "8082")
-            },
-        },
-        {
-            Key: "kunpay", Name: "坤支付", Category: "建站", Icon: "store", Version: "latest",
-            Desc: "个人免签约码支付系统(Go 单二进制 + SQLite):易支付协议完全兼容,安卓APP扫码配对自动到账,多码轮询,审计级资金流水。首次登录 admin/admin123,系统强制改密",
-            Params: []Param{
-                {Key: "Port", Label: "监听端口", Default: "8090", Type: "port", Required: true},
-            },
-            ComposeFrom: func(p map[string]string) string {
-                port := pval(p, "Port", "8090")
-                // 镜像未发布 Docker Hub:compose 远程 Git 上下文构建(BuildKit 支持),
-                // kunpay 仓库自带多阶段 Dockerfile(CA/时区/非 root/healthcheck 齐备),
-                // 首次安装构建约 2-5 分钟,之后走镜像缓存
-                return `services:
+			},
+			WebURL: func(p map[string]string) string {
+				return "http://<IP>:" + pval(p, "Port", "8080")
+			},
+		},
+		{
+			Key: "kunpay", Name: "坤支付", Category: "建站", Icon: "store", Version: "latest",
+			Desc: "个人免签约码支付系统(Go 单二进制 + SQLite):易支付协议完全兼容,安卓APP扫码配对自动到账,多码轮询,审计级资金流水。首次登录 admin/admin123,系统强制改密",
+			Params: []Param{
+				{Key: "Port", Label: "监听端口", Default: "8090", Type: "port", Required: true},
+			},
+			ComposeFrom: func(p map[string]string) string {
+				port := pval(p, "Port", "8090")
+				// 镜像未发布 Docker Hub:compose 远程 Git 上下文构建(BuildKit 支持),
+				// kunpay 仓库自带多阶段 Dockerfile(CA/时区/非 root/healthcheck 齐备),
+				// 首次安装构建约 2-5 分钟,之后走镜像缓存。
+				// 2026-10-27:作者已撤出 GitHub(kungec 全 404),源改到 gitee NEXAB
+				return `services:
   kunpay:
-    build: https://github.com/kungec/kunpay.git
+    build: https://gitee.com/NEXAB/kunpay.git
     image: kunpay-local:latest
     container_name: kun-kunpay
     restart: unless-stopped
@@ -504,58 +467,11 @@ volumes:
 volumes:
   kunpay_data:
 `
-            },
-            WebURL: func(p map[string]string) string { return fmt.Sprintf("http://<IP>:%s", pval(p, "Port", "8090")) },
-        },
-        {
-            Key: "kunying-cms", Name: "坤影CMS", Category: "建站", Icon: "film", Version: "latest",
-            Desc: "免费开源影视CMS:采集聚合/会员VIP/多主题(含2套加密付费主题)/SEO,浏览器安装向导一键部署",
-            Params: []Param{
-                {Key: "Port", Label: "监听端口", Default: "8083", Type: "port", Required: true},
-                {Key: "DBRootPassword", Label: "MySQL root 密码", Default: "Kun@KY2026", Required: true},
-            },
-            ComposeFrom: func(p map[string]string) string {
-                port := pval(p, "Port", "8083")
-                return `services:
-  web:
-    build: ./src
-    image: kunying-local:latest
-    container_name: kun-kunying
-    restart: unless-stopped
-    ports:
-      - "` + port + `:80"
-    environment:
-      TZ: Asia/Shanghai
-    volumes:
-      - kunying_data:/var/www/html/data
-      - kunying_upload:/var/www/html/upload
-    depends_on:
-      - db
-  db:
-    image: mariadb:10.11
-    container_name: kun-kunying-db
-    restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: kunying
-      MYSQL_ROOT_PASSWORD: ` + pval(p, "DBRootPassword", "Kun@KY2026") + `
-      MYSQL_CHARSET: utf8mb4
-      TZ: Asia/Shanghai
-    volumes:
-      - kunying_db:/var/lib/mysql
-    # 小内存机调优:关闭 performance_schema、缩小缓冲池(省约 60MB)
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci --performance_schema=OFF --innodb_buffer_pool_size=64M
-volumes:
-  kunying_data:
-  kunying_upload:
-  kunying_db:
-`
-            },
-            WebURL: func(p map[string]string) string {
-                return fmt.Sprintf("http://<IP>:%s", pval(p, "Port", "8083"))
-            },
-        },
-        {
-            Key: "npm", Name: "Nginx Proxy Manager", Category: "Web服务器", Icon: "shuffle", Version: "latest",
+			},
+			WebURL: func(p map[string]string) string { return fmt.Sprintf("http://<IP>:%s", pval(p, "Port", "8090")) },
+		},
+		{
+			Key: "npm", Name: "Nginx Proxy Manager", Category: "Web服务器", Icon: "shuffle", Version: "latest",
 			Desc: "可视化反向代理管理,自动申请 SSL 证书",
 			Params: []Param{
 				{Key: "Port", Label: "管理端口", Default: "81", Type: "port", Required: true},
@@ -620,7 +536,7 @@ networks:
 			Params: []Param{
 				{Key: "Version", Label: "Python 版本", Default: "3.12", Type: "select", Required: true,
 					Options: []string{"3.12", "3.11", "3.10", "3.9"},
-					Help: "slim 精简镜像;进入终端后 python / pip 即用,工作目录 /app"},
+					Help:    "slim 精简镜像;进入终端后 python / pip 即用,工作目录 /app"},
 			},
 			ComposeFrom: func(p map[string]string) string {
 				return fmt.Sprintf(`services:
@@ -643,7 +559,7 @@ networks:
 			Params: []Param{
 				{Key: "Version", Label: "Node.js 版本", Default: "22", Type: "select", Required: true,
 					Options: []string{"22", "20", "18"},
-					Help: "slim 精简镜像;进入终端后 node / npm 即用,工作目录 /app"},
+					Help:    "slim 精简镜像;进入终端后 node / npm 即用,工作目录 /app"},
 			},
 			ComposeFrom: func(p map[string]string) string {
 				return fmt.Sprintf(`services:
@@ -666,7 +582,7 @@ networks:
 			Params: []Param{
 				{Key: "Version", Label: "Go 版本", Default: "1.23", Type: "select", Required: true,
 					Options: []string{"1.23", "1.22", "1.21"},
-					Help: "标准 bookworm 镜像;进入终端后 go 即用,工作目录 /app(GOPATH=/go)"},
+					Help:    "标准 bookworm 镜像;进入终端后 go 即用,工作目录 /app(GOPATH=/go)"},
 			},
 			ComposeFrom: func(p map[string]string) string {
 				return fmt.Sprintf(`services:
@@ -1043,14 +959,6 @@ func Install(key string, params map[string]string) (string, error) {
 		return "", err
 	}
 
-	// 坤影CMS:下载源码包到 compose 目录(镜像由 ./src 本地构建;
-	// 不用远程 Git 上下文——BuildKit 对 git 仓库有深层缓存,修复后拉不到新代码)
-	if key == "kunying-cms" {
-		if err := installKunyingCMS(dir); err != nil {
-			return "", fmt.Errorf("坤影CMS 初始化失败: %w", err)
-		}
-	}
-
 	// 坤发卡:下载 database.sql 供 MySQL 首次启动自动导入
 	if key == "kunfaka" {
 		if err := installKunfaka(dir, params); err != nil {
@@ -1087,13 +995,6 @@ func Install(key string, params map[string]string) (string, error) {
 		_ = util.AtomicWriteString(filepath.Join(dir, "Caddyfile"), caddyfile, 0o644)
 	}
 
-	// NAT Cloud:下载源码和 schema.sql 供 MySQL 首次启动自动导入
-	if key == "nat-cloud" {
-		if err := installNatCloud(dir); err != nil {
-			return "", fmt.Errorf("NAT Cloud 初始化失败: %w", err)
-		}
-	}
-
 	list := loadInstances()
 	for i := range list {
 		if list[i].Key == key {
@@ -1114,29 +1015,12 @@ func Install(key string, params map[string]string) (string, error) {
 	return key, saveInstances(list)
 }
 
-// installKunfaka 下载 kunfaka 源码与 database.sql 并写入实例目录
+// installKunfaka 下载坤发卡源码包并解压到 ./src(compose 里 build: ./src)。
+// 上游自 v2.96 起不再发布 Docker Hub 预构建镜像,也不再提供 database.sql
+// (首次访问走 install.php 安装向导,库表由向导自动创建)。
 func installKunfaka(dir string, params map[string]string) error {
-	const repo = "https://raw.githubusercontent.com/kungec/kunfaka/main"
-	// 下载 database.sql(MySQL 首次启动自动导入)
-	sqlURL := repo + "/database.sql"
-	sqlData, err := downloadFile(sqlURL, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("下载 database.sql 失败: %w", err)
-	}
-	if err := util.AtomicWriteString(filepath.Join(dir, "database.sql"), string(sqlData), 0o644); err != nil {
-		return err
-	}
-	return nil
-}
-
-// installNatCloud 下载 nat-cloud 源码包并解压到 compose 目录
-// installKunyingCMS 下载坤影CMS源码包并解压到 compose 目录 ./src
-// (compose build: ./src;升级 = 卸载重装或手动重新下载,镜像随之更新)
-func installKunyingCMS(dir string) error {
-	// 用 tag 引用而非 main:GitHub 对 main 的 archive tar.gz 有缓存,
-// Dockerfile 修复后可能长时间仍下发旧包;tag archive 独立生成即时生效
-	tarURL := "https://github.com/kungec/kunying-cms/archive/refs/tags/v1.0.61.tar.gz"
-	data, err := downloadFile(tarURL, 60*time.Second)
+	tarURL := "https://gitee.com/NEXAB/kunfaka/repository/archive/main.tar.gz"
+	data, err := downloadFile(tarURL, 120*time.Second)
 	if err != nil {
 		return fmt.Errorf("下载源码包失败: %w", err)
 	}
@@ -1149,76 +1033,15 @@ func installKunyingCMS(dir string) error {
 	}
 	src := filepath.Join(dir, "src")
 	_ = os.RemoveAll(src)
-	cmd := exec.Command("tar", "-xzf", tgz, "-C", tmp, "--strip-components=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		_ = os.RemoveAll(tmp)
-		return fmt.Errorf("解压失败: %v %s", err, strings.TrimSpace(string(out)))
-	}
 	_ = os.MkdirAll(src, 0o755)
-	if out, err := exec.Command("sh", "-c",
-		fmt.Sprintf("cp -a %s/. %s/ && rm -rf %s/.tmp_install %s/src/.tmp_install",
-			p1ShTmp(tmp), p1ShTmp(src), p1ShTmp(dir), p1ShTmp(src))).CombinedOutput(); err != nil {
-		_ = os.RemoveAll(tmp)
-		return fmt.Errorf("源码就位失败: %v %s", err, strings.TrimSpace(string(out)))
-	}
-	_ = os.RemoveAll(tmp)
-	return nil
-}
-
-func p1ShTmp(p string) string {
-	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
-}
-
-func installNatCloud(dir string) error {
-	tarURL := "https://github.com/kungec/nat-cloud/archive/refs/heads/main.tar.gz"
-	data, err := downloadFile(tarURL, 60*time.Second)
-	if err != nil {
-		return fmt.Errorf("下载源码包失败: %w", err)
-	}
-	tmp := filepath.Join(dir, ".tmp_install")
-	_ = os.RemoveAll(tmp)
-	_ = os.MkdirAll(tmp, 0o755)
-	tgz := filepath.Join(tmp, "src.tar.gz")
-	if err := os.WriteFile(tgz, data, 0o644); err != nil {
-		return err
-	}
-	cmd := exec.Command("tar", "-xzf", tgz, "-C", tmp, "--strip-components=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	// gitee archive 顶层是 <repo>-main/,用 --strip-components=1 去掉
+	if out, err := exec.Command("tar", "-xzf", tgz, "-C", src, "--strip-components=1").CombinedOutput(); err != nil {
 		_ = os.RemoveAll(tmp)
 		return fmt.Errorf("解压失败: %v %s", err, strings.TrimSpace(string(out)))
 	}
-	// 复制源码目录和文件到 compose 目录
-	for _, name := range []string{"app", "public", "cron", "install"} {
-		srcDir := filepath.Join(tmp, name)
-		dstDir := filepath.Join(dir, name)
-		if _, err := os.Stat(srcDir); err == nil {
-			filepath.WalkDir(srcDir, func(p string, d os.DirEntry, err error) error {
-				if err != nil {
-					return err
-				}
-				rel, _ := filepath.Rel(srcDir, p)
-				dst := filepath.Join(dstDir, rel)
-				if d.IsDir() {
-					return os.MkdirAll(dst, 0o755)
-				}
-				data, err := os.ReadFile(p)
-				if err != nil {
-					return err
-				}
-				return os.WriteFile(dst, data, 0o644)
-			})
-		}
-	}
-	for _, f := range []string{"index.php", "router.php", ".htaccess", ".env.example"} {
-		src := filepath.Join(tmp, f)
-		if _, err := os.Stat(src); err == nil {
-			data, _ := os.ReadFile(src)
-			_ = util.AtomicWriteString(filepath.Join(dir, f), string(data), 0o644)
-		}
-	}
-	// schema.sql 从 install/ 移到顶层
-	if sb, err := os.ReadFile(filepath.Join(dir, "install", "schema.sql")); err == nil {
-		_ = util.AtomicWrite(filepath.Join(dir, "schema.sql"), sb, 0o644)
+	if _, err := os.Stat(filepath.Join(src, "Dockerfile")); err != nil {
+		_ = os.RemoveAll(tmp)
+		return fmt.Errorf("源码包缺少 Dockerfile,无法构建镜像")
 	}
 	_ = os.RemoveAll(tmp)
 	return nil
@@ -1235,7 +1058,7 @@ func downloadFile(url string, timeout time.Duration) ([]byte, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
 
 // InstanceDir 返回实例目录
@@ -1812,7 +1635,6 @@ func allocatePHPKey(version string) (string, error) {
 	return "php" + ver, nil
 }
 
-
 // EnsureBtRootMount 宝塔迁移:确保 Nginx 容器挂载宝塔站点目录 /www/wwwroot
 // (phpfpm 迁移站点 root 保持宿主机原路径,容器内同路径可直接服务)
 func EnsureBtRootMount(w io.Writer) error {
@@ -1863,6 +1685,7 @@ func EnsureBtRootMount(w io.Writer) error {
 	}
 	return nil
 }
+
 // tailWriter 透传写入并保留尾部若干字节,失败时把 compose 的真实报错带进任务错误
 type tailWriter struct {
 	w   io.Writer
