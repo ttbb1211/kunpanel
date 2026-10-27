@@ -20,10 +20,10 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: 编译并打包(发布源指向本仓库)
+      - name: 编译并打包
         run: |
           chmod +x build.sh
-          bash build.sh "${GITHUB_REF_NAME}" "${GITHUB_REPOSITORY}"
+          bash build.sh "${GITHUB_REF_NAME}"
 
       - name: 校验产物
         run: |

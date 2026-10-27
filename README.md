@@ -1,3 +1,47 @@
+<!-- ===== 本仓库定制说明（插入在上游 README 最顶部） ===== -->
+
+> # 📌 本仓库说明 · ttbb1211 定制构建
+>
+> 基于上游 **坤面板 v2.96.2** 的个人定制版。**版本号与上游保持一致**——同一版本号下，本仓库的产物额外含下列 4 处改动。
+>
+> ## 相对上游的改动（仅此 4 处）
+>
+> | # | 改动 | 涉及文件 | 原因 |
+> |---|---|---|---|
+> | 1 | 反代 `proxy_read_timeout` **300s → 3600s** | `internal/websites/websites.go` | 上游模板硬编码 300s，SSE 长连接（Tagger 刮削进度条）空闲 5 分钟即被断开 |
+> | 2 | 反代模板补 `X-Forwarded-Host` / `X-Forwarded-Port` | 同上 | 上游只透传 `X-Forwarded-For/Proto`，后端取不到真实域名与端口 |
+> | 3 | 站点列表窄屏适配：列宽收窄 + `≤1499 / 1359 / 1199px` 逐级隐藏「创建时间 / 端口 / HTTPS」 | `web/static/pages.js`<br>`web/static/app.css`<br>`web/static/ui.js` | 9 列合计 1426px，1366 屏压到 76%、1280 屏 70%，全表文字截断；域名列曾被压成 0 宽 |
+> | 4 | 退出重登后脏 hash 回落概览 | `web/static/app.js` | 停在 `#/login` 会让顶栏监控与概览页定时器双倍轮询，页面卡在骨架屏 |
+>
+> ## 上游已迁出 GitHub
+>
+> 原作者（坤哥 / NEXAB）已删除 GitHub 仓库，现同步发布于三处，**内容完全一致**：
+>
+> | 平台 | 地址 | 说明 |
+> |---|---|---|
+> | **CNB**（主） | https://cnb.cool/kunge-nexa/kunpanel | 面板内置「一键更新」的第 1 源 |
+> | GitCode | https://gitcode.com/NEXAB/kunpanel | 第 2 源（Release API 按时间升序返回，取首条会拿到旧版） |
+> | Gitee | https://gitee.com/NEXAB/kunpanel | 第 3 源，API 最完整 |
+>
+> ⚠️ **面板自带的「一键更新」按 CNB → GitCode → Gitee 三源回退取包，与本仓库无关**。
+> 在面板里执行一键更新会用官方原版覆盖本仓库的 4 处改动，需要重新编译。
+>
+> ## 构建
+>
+> 上游 `go.mod` 要求 **Go 1.26+**（`go 1.26.0` / `toolchain go1.27.3`），低版本编不过：
+>
+> ```bash
+> CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+>   -ldflags "-s -w -X main.version=v2.96.2" -o kunpanel .
+> ```
+>
+> 推 `v*` 标签会触发 `.github/workflows/release.yml` 自动出全套安装包并建 Release，
+> 资产命名与 `build.sh` 一致（`kunpanel_<版本>_<os>_<arch>.tar.gz` + 无版本副本 + `SHA256SUMS`）。
+>
+> ---
+>
+> 以下为上游 README 原文，未作改动。
+
 <div align="center">
 
 <img src="web/static/logo.png" width="88" alt="坤面板">
@@ -6,25 +50,20 @@
 
 **轻量级服务器运维管理面板 —— Go 单二进制,开箱即用**
 
-[![](https://img.shields.io/badge/版本-v2.84.2-3b82f6?style=flat-square)](https://github.com/ttbb1211/kunpanel/releases)
-[![](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square)](https://golang.org)
+[![](https://img.shields.io/badge/版本-v2.96.1-3b82f6?style=flat-square)](https://gitee.com/NEXAB/kunpanel/releases)
+[![](https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat-square)](https://golang.org)
 [![](https://img.shields.io/badge/平台-Linux%20%7C%20Windows-lightgrey?style=flat-square)](./README.md)
 [![](https://img.shields.io/badge/License-MIT-green?style=flat-square)](./LICENSE)
+[![](https://img.shields.io/badge/QQ群-307386089-eb1923?style=flat-square)](#交流群)
 [![](https://img.shields.io/badge/📖_使用教程-TUTORIAL-8a2be2?style=flat-square)](docs/TUTORIAL.md)
 
+**🎉 隆重感谢金牌赞助商 🎉**
+
+[![跨境 VPS · 专注家宽住宅 IP 云服务器](docs/sponsor-banner.svg)](https://www.kjvps.com)
+
+💬 交流 QQ 群:**`307386089`** —— 反馈 bug / 功能建议 / 运维经验交流
+
 </div>
-
----
-
-> **本仓库是 [`kungec/kunpanel`](https://github.com/kungec/kunpanel) 的 fork**（MIT 协议，原作者版权保留）。
-> 代码基线已跟进上游 **v2.91.0**（2026-10-19 合并），本仓库版本号沿用自身的 `v2.84.x` 序列。
-> 相对上游的差异：
-> ① 站点配置只在模板版本升级时迁移，**不再每次重启重建 `site_*.conf`**；
-> ② 在线更新遇到 Release 资产未就绪时**自动重试**（404/429/5xx，最多 6 次 × 10s），不再直接甩 404；
-> ③ 下载超时由 15 分钟收紧到 **3 分钟**；
-> ④ 发布源（安装脚本、在线更新、SHA256SUMS）全部指向**本仓库**，不需要额外参数。
->
-> 安装、升级、下载都走本仓库，命令与上游完全一致。
 
 ---
 
@@ -58,11 +97,17 @@
 x86_64 / aarch64 / armv7 三架构,自动识别 systemd / OpenRC / SysV:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ttbb1211/kunpanel/main/scripts/install.sh | bash
+curl -fsSL 'https://cnb.cool/kunge-nexa/kunpanel/-/git/raw/main/scripts/install.sh' -o kp-install.sh && bash kp-install.sh
+```
+
+备用源(脚本地址替换为下者即可):
+
+```bash
+curl -fsSL 'https://gitee.com/NEXAB/kunpanel/raw/main/scripts/install.sh' -o kp-install.sh && bash kp-install.sh
 ```
 
 安装完成自动输出:**随机端口 + 随机安全入口 + 随机管理员密码**。
-国内服务器安装与「在线更新」均内置 GitHub 加速兜底,不必科学上网。
+下载全程三源自动回退(CNB → GitCode → Gitee),面板「在线更新」同样三源回退,国内服务器无需科学上网。
 
 <details>
 <summary>📦 安装参数与卸载</summary>
@@ -72,7 +117,7 @@ bash install.sh --port 20000 --username admin --password yourpwd   # 自定义�
 bash install.sh --with-docker            # 同时安装 Docker 引擎(自动配国内镜像源)
 bash install.sh --mirror aliyun          # Docker 使用阿里云镜像源
 bash install.sh --proxy https://gh-proxy.com/   # GitHub 下载加速
-bash install.sh --version v2.84.2        # 安装指定版本
+bash install.sh --version v2.84.0        # 安装指定版本
 bash install.sh --offline ./kunpanel_linux_amd64.tar.gz   # 离线安装(含 SHA-256 校验)
 bash install.sh --uninstall              # 卸载
 ```
@@ -80,7 +125,7 @@ bash install.sh --uninstall              # 卸载
 
 ### Windows
 
-下载 [Release](https://github.com/ttbb1211/kunpanel/releases) 中的 `kunpanel_windows_amd64.zip`,
+下载 [Release](https://gitee.com/NEXAB/kunpanel/releases) 中的 `kunpanel_windows_amd64.zip`,
 解压后**右键以管理员身份运行 `install.bat`** —— 自动注册 Windows 服务、放行防火墙并输出访问地址。
 
 ### 🐳 Docker
@@ -161,12 +206,23 @@ docker run -d --name kunpanel -p 20000:20000 \
 ## 🛠 从源码构建
 
 ```bash
-git clone https://github.com/ttbb1211/kunpanel.git && cd kunpanel
-bash build.sh v2.84.2 ttbb1211/kunpanel     # 第二个参数 = 发布源，不传则用二进制内置默认值
+git clone https://gitee.com/NEXAB/kunpanel.git && cd kunpanel
+bash build.sh v2.78.1     # 产出 linux(amd64/arm64/arm) + windows 全平台安装包
 ```
 
-Go 1.23+,前端为原生 JS(`go:embed` 内嵌),无 Node 构建步骤。
+Go 1.27+,前端为原生 JS(`go:embed` 内嵌),无 Node 构建步骤。
+
+## 🤝 赞助商
+
+<div align="center">
+
+[![跨境 VPS](docs/sponsor-banner.svg)](https://www.kjvps.com)
+
+**感谢 [跨境 VPS](https://www.kjvps.com) 为坤面板提供服务器资源赞助**
+家宽住宅 IP · 原生 IP · 大带宽 · 高防 —— [www.kjvps.com](https://www.kjvps.com)
+
+</div>
 
 ## 📄 License
 
-[MIT](LICENSE) · 本仓库为 fork,原作者版权声明保留在 LICENSE 中。
+[MIT](LICENSE) · 交流 QQ 群:**307386089**

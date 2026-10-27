@@ -231,11 +231,12 @@ function skeletonTable(rows, cols, titleW) {
   return html + "</div>";
 }
 
-/* 空状态(SVG) */
-function emptyState(icon, text, sub) {
+/* 空状态(SVG;actionHtml 可选:居中操作按钮等 CTA) */
+function emptyState(icon, text, sub, actionHtml) {
   return '<div class="empty-tip page-fade"><div class="empty-ico">' + I(icon || "inbox") + "</div>" +
     '<div class="empty-text">' + esc(text || "暂无数据") + "</div>" +
-    (sub ? '<div class="empty-sub">' + esc(sub) + "</div>" : "") + "</div>";
+    (sub ? '<div class="empty-sub">' + esc(sub) + "</div>" : "") +
+    (actionHtml ? '<div class="empty-act">' + actionHtml + "</div>" : "") + "</div>";
 }
 
 /* ---------- Toast ---------- */
@@ -526,6 +527,55 @@ function taskModal(taskId, onDone) {
 
 /* ---------- 后台任务中心(全部任务列表 + 实时日志入口) ---------- */
 let _tcTimer = null;
+/* ---------- 新手帮助中心:分类常见问题 ---------- */
+function helpCenter() {
+  var QA = [
+    { cat: "快速上手", ico: "bolt", items: [
+      { q: "第一次使用,从哪里开始?", a: "打开「概览」页,顶部有「四步完成部署」引导:安装 Docker → 创建网站 → 装数据库/应用 → 加固面板安全。跟着点「去操作」即可,不需要按顺序。" },
+      { q: "怎么创建我的第一个网站?", a: "进入「网站」页点「创建网站」:填一个已解析到本服务器的域名,选择站点类型(纯静态页选静态,WordPress 等选 PHP,转发到本机端口选反向代理),点创建即可。" },
+      { q: "怎么安装 WordPress?", a: "两步:①「应用商店」安装 MySQL 和 PHP;②「网站」创建一个 PHP 站点,把 WordPress 程序上传到站点根目录,浏览器访问域名按向导完成安装。" },
+    ]},
+    { cat: "域名与访问", ico: "globe", items: [
+      { q: "域名怎么解析到服务器?", a: "到域名服务商控制台添加一条 A 记录:主机记录填前缀(如 www),记录值填服务器公网 IP,生效一般几分钟到半小时。" },
+      { q: "网站打不开,怎么排查?", a: "按顺序检查:①域名是否解析到本机公网 IP;②防火墙是否放行 80/443(「安全 → 系统防火墙」);③站点开关是否启用;④云服务器还需在厂商控制台放行端口。" },
+      { q: "反向代理是什么时候用的?", a: "当你的程序(Go/Node/Java 等)已经在本机某个端口运行时,用反向代理把域名转发到该端口,对外就是标准网站,无需改动程序。" },
+    ]},
+    { cat: "HTTPS 与证书", ico: "key", items: [
+      { q: "怎么给网站开启 HTTPS(地址栏小锁)?", a: "「网站」页点「SSL 证书」→ 选择免费证书(Let's Encrypt)→ 一键申请。前提:域名已解析到本服务器且 80 端口可访问。签发后面板会自动续期。" },
+      { q: "证书快到期了怎么办?", a: "面板签发的免费证书自动续期,无需操作;自己上传的商用证书请在到期前手动更新文件。" },
+    ]},
+    { cat: "数据库", ico: "database", items: [
+      { q: "怎么创建数据库?", a: "「数据库」页选择一个运行中的实例(如 MySQL)→ 创建数据库,填库名和密码。密码请妥善保存,网站程序连接时要用。" },
+      { q: "数据库密码忘了怎么办?", a: "数据库页 → 管理弹窗可重置 root 密码,改完后记得同步更新使用它的网站程序配置文件。" },
+    ]},
+    { cat: "安全", ico: "shield", items: [
+      { q: "防火墙需要开启吗?", a: "强烈建议开启(「安全 → 系统防火墙」),只放行需要的端口:80/443(网站)和面板端口,其余默认拒绝。" },
+      { q: "建议做哪些安全加固?", a: "性价比最高的三件事:①开启面板「安全入口」;②开启面板 HTTPS;③开启两步验证。都在「面板设置」里,概览引导第四步可直达。" },
+      { q: "面板密码 / 安全入口忘了怎么办?", a: "在服务器上执行:cat /opt/kunpanel/data/initial_password.txt 即可查看面板地址与账号信息。" },
+    ]},
+    { cat: "应用与更新", ico: "store", items: [
+      { q: "应用卸载后数据会丢吗?", a: "普通卸载保留数据卷,重新安装后数据还在;只有卸载时明确勾选「含数据目录」才会彻底清除。" },
+      { q: "在线更新失败怎么办?", a: "更新自动在 CNB → GitCode → Gitee 三个源之间回退;全部失败通常是服务器出网受限,请稍后重试。" },
+      { q: "服务器负载 / 内存高怎么排查?", a: "「容器」页看哪个容器占用高;「监控 → 进程管理」按 CPU/内存排序;「面板设置 → 系统清理」可一键清理缓存垃圾。" },
+    ]},
+  ];
+  var body = '<div class="hc-wrap">';
+  QA.forEach(function(sec) {
+    body += '<div class="hc-cat">' + I(sec.ico) + " " + esc(sec.cat) + "</div>";
+    sec.items.forEach(function(it) {
+      body += '<details class="hc-item"><summary>' + esc(it.q) + "</summary>" +
+        '<div class="hc-a">' + esc(it.a) +
+        (it.go ? ' <a href="' + it.go + '" class="hc-go" data-hc-go="1">' + esc("前往") + " →</a>" : "") +
+        "</div></details>";
+    });
+  });
+  body += '<div class="help" style="margin-top:12px">提示:各功能页顶部都有白话说明;遇到问题可加入交流群 307386089。</div></div>';
+  var m = openLayer({ title: "新手帮助 · 常见问题", width: 640, body: body,
+    footer: '<button class="btn btn-primary" data-act="ok">知道了</button>' });
+  qs('[data-act="ok"]', m.el).onclick = m.close;
+  qsa("[data-hc-go]", m.el).forEach(function(a) { a.onclick = function() { m.close(); }; });
+}
+
 function taskCenter() {
   const m = openLayer({
     title: "后台任务",

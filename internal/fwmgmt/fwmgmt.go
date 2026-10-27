@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"kunpanel/internal/config"
@@ -29,11 +30,11 @@ const (
 
 // Rule 端口规则
 type Rule struct {
-	Port     string `json:"port"` // "80" 或 "4000:4010" 或 "80/tcp"
-	Proto    string `json:"proto"` // tcp / udp / ""
-	Action   string `json:"action"` // allow / deny
-	From     string `json:"from"` // 来源 IP(可空)
-	Comment  string `json:"comment"`
+	Port    string `json:"port"`   // "80" 或 "4000:4010" 或 "80/tcp"
+	Proto   string `json:"proto"`  // tcp / udp / ""
+	Action  string `json:"action"` // allow / deny
+	From    string `json:"from"`   // 来源 IP(可空)
+	Comment string `json:"comment"`
 }
 
 // Status 防火墙整体状态
@@ -46,6 +47,14 @@ type Status struct {
 
 var portRe = regexp.MustCompile(`^(\d{1,5})(:(\d{1,5}))?$`)
 
+// Detect 结果缓存(ufw status 慢,15s SWR;写操作失效)
+var (
+	fwMu       sync.Mutex
+	fwCache    *Status
+	fwCacheAt  time.Time
+	fwFetching bool
+)
+
 func have(bin string) bool {
 	if _, err := util.Run("sh", "-c", "command -v "+bin); err == nil {
 		return true
@@ -55,8 +64,39 @@ func have(bin string) bool {
 	return err == nil
 }
 
-// Detect 检测防火墙类型与状态
+// Detect 检测防火墙类型与状态。
+// ufw status 单次执行 0.5~0.9s,结果走 15s 缓存;Allow/Deny/SetActive/Install
+// 等写操作后自动失效,保证改动即时可见。
 func Detect() *Status {
+	fwMu.Lock()
+	if fwCache != nil && time.Since(fwCacheAt) < 15*time.Second {
+		st := fwCache
+		fwMu.Unlock()
+		return st
+	}
+	if fwCache != nil && fwFetching {
+		st := fwCache
+		fwMu.Unlock()
+		return st
+	}
+	fwMu.Unlock()
+	st := detect()
+	fwMu.Lock()
+	fwCache = st
+	fwCacheAt = time.Now()
+	fwMu.Unlock()
+	return st
+}
+
+// Invalidate 清空防火墙状态缓存(写操作后调用)
+func Invalidate() {
+	fwMu.Lock()
+	fwCache = nil
+	fwMu.Unlock()
+}
+
+// detect 缓存未命中时的真实检测(原 Detect 逻辑)
+func detect() *Status {
 	st := &Status{Kind: NONE}
 	if have("ufw") {
 		st.Kind = UFW
@@ -181,7 +221,8 @@ func parseUFWAdded(out string) []Rule {
 	return rules
 }
 
-func parseFwdPort(p string) Rule {	r := Rule{Port: p, Action: "allow"}
+func parseFwdPort(p string) Rule {
+	r := Rule{Port: p, Action: "allow"}
 	if i := strings.Index(p, "/"); i > 0 {
 		r.Proto = p[i+1:]
 	}
@@ -226,6 +267,7 @@ func ufwRun(args ...string) (string, error) {
 }
 
 func Allow(port, comment string) error {
+	Invalidate()
 	port = strings.TrimSpace(port)
 	if err := ValidatePort(strings.Split(port, "/")[0]); err != nil {
 		return err
@@ -268,6 +310,7 @@ func Allow(port, comment string) error {
 
 // Deny 拒绝/移除端口
 func Deny(port string) error {
+	Invalidate()
 	port = strings.TrimSpace(port)
 	if err := ValidatePort(strings.Split(port, "/")[0]); err != nil {
 		return err
@@ -301,6 +344,7 @@ func Deny(port string) error {
 // 启用前必须先放行:SSH 实际端口、面板自身端口、Web 80/443,
 // 否则默认拒绝策略会把面板和站点全部挡在外面(自锁)。
 func SetActive(on bool) error {
+	Invalidate()
 	st := Detect()
 	switch st.Kind {
 	case UFW:
@@ -356,6 +400,7 @@ func splitPortProto(p string) (string, string) {
 
 // Install 一键安装防火墙(仅 Linux):ufw(apt) / firewalld(dnf/yum)
 func Install(kind string, w io.Writer) error {
+	Invalidate()
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("仅在 Linux 上支持安装防火墙")
 	}

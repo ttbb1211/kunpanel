@@ -20,17 +20,18 @@ PAGES.dashboard = {
       api("/crons").catch(function() { return []; }),
       api("/uptime/monitors").catch(function() { return []; }),
       api("/ssl/certs").catch(function() { return []; }),
+      api("/settings").catch(function() { return {}; }),
     ]);
     if (el.dataset.route !== "dashboard") return;
     var d = results[0], sites = results[1] || [], dbs = results[2] || [], crons = results[3] || [],
-        ups = results[4] || [], certs = results[5] || [];
+        ups = results[4] || [], certs = results[5] || [], st = results[6] || {};
     var s = d.system, p = d.panel, dk = d.docker;
     var disk = s.disks && s.disks[0] ? s.disks[0] : { used: 0, total: 0, free: 0, usage_percent: 0 };
     var upDown = 0;
     ups.forEach(function(m) { if (m.enabled && !m.up) upDown++; });
 
     function kpi(icon, color, num, label, go) {
-      return '<div class="card kpi-card card-hover" data-go="' + go + '"><span class="kpi-ico" style="color:' + color + '">' + I(icon) + "</span>" +
+      return '<div class="card kpi-card card-hover" data-go="' + go + '"><span class="kpi-ico" style="--ic1:' + color + '">' + I(icon) + "</span>" +
         '<div class="kpi-num"><b>' + num + "</b><span>" + label + "</span></div></div>";
     }
     var expiring = 0;
@@ -46,17 +47,54 @@ PAGES.dashboard = {
     // 数据库 KPI = 各运行实例的业务库总数(与数据库页口径一致;databases 由后端统计)
     var dbTotal = dbs.reduce(function(a, r) { return a + (r.running ? r.databases || 0 : 0); }, 0);
 
-    function bar(label, pct, sub, color, liveId) {
-      var pctCls = pct >= 90 ? "danger" : pct >= 75 ? "warn" : "";
-      return '<div class="mon-row"><div class="mon-head"><span>' + label + (liveId ? ' <b id="' + liveId + '">' + pct.toFixed(1) + "%</b>" : "<b>" + pct.toFixed(1) + "%</b>") + "</span>" +
-        '<span class="mon-sub">' + sub + "</span></div>" +
-        '<div class="mon-bar"><i class="' + pctCls + '"' + (liveId ? ' id="' + liveId + '-bar"' : "") + ' style="width:' + Math.min(100, pct) + '%"></i></div></div>';
+    // 新手引导(四步上手;全部完成或手动关闭后不再显示)
+    var guideSteps = [
+      { no: 1, done: !!(dk && dk.installed), title: "安装 Docker", desc: "应用商店、PHP、数据库都依赖它,点一下自动装", go: "docker", btn: "去安装" },
+      { no: 2, done: sites.length > 0, title: "创建第一个网站", desc: "填个域名就行,支持静态页面、PHP 程序和反向代理", go: "websites", btn: "去建站" },
+      { no: 3, done: dbs.some(function(r) { return r.running; }), title: "安装数据库或应用", desc: "MySQL、WordPress 等常用软件一键安装", go: "apps", btn: "去商店" },
+      { no: 4, done: !!((st.entrance && st.entrance !== "-") || st.ssl || st.totp_enabled), title: "加固面板安全", desc: "开启安全入口 / HTTPS / 两步验证,任一项即可", go: "settings", btn: "去设置" },
+    ];
+    var guideDone = guideSteps.filter(function(x) { return x.done; }).length;
+    var guideHide = false;
+    try { guideHide = localStorage.getItem("kp_guide_hide") === "1"; } catch (e2) {}
+    var guideHtml = "";
+    if (!guideHide && guideDone < guideSteps.length) {
+      guideHtml = '<div class="card guide-card" id="guide-card">' +
+        '<div class="guide-head"><span class="guide-ico">' + I("bolt") + '</span><div class="guide-title"><b>欢迎使用坤面板,四步完成部署</b>' +
+        "<span>已完成 " + guideDone + " / " + guideSteps.length + ' 步,点「去操作」直达对应页面,不需要按顺序</span></div>' +
+        '<button class="btn btn-xs btn-plain" id="guide-hide">不再显示</button></div>' +
+        '<div class="guide-steps">' + guideSteps.map(function(g) {
+          return '<div class="guide-step' + (g.done ? " done" : "") + '">' +
+            '<span class="gs-mark">' + (g.done ? I("shield") : g.no) + "</span>" +
+            '<div class="gs-body"><b>' + g.title + "</b><span>" + g.desc + "</span></div>" +
+            (g.done ? '<span class="gs-done">' + I("shield") + " 已完成</span>" : '<a class="btn btn-xs btn-primary" href="#/' + g.go + '">' + g.btn + "</a>") +
+            "</div>";
+        }).join("") + "</div></div>";
     }
-    var diskRows = (s.disks || []).slice(0, 3).map(function(dk2, i) {
-      return bar("磁盘 " + dk2.path, dk2.usage_percent || 0, "已用 " + fmtBytes(dk2.used) + " / " + fmtBytes(dk2.total), "", i === 0 ? "live-disk" : "");
+
+    // 环形进度(首页监控可视化;r=26,周长 163.36;渐变描边)
+    var RING_C = 163.36;
+    var ringSeq = 0;
+    function ring(label, pct, sub, liveId) {
+      pct = Math.max(0, Math.min(100, pct));
+      var pctCls = pct >= 90 ? "danger" : pct >= 75 ? "warn" : "";
+      var off = (RING_C * (1 - pct / 100)).toFixed(1);
+      var gid = "rg" + (ringSeq++);
+      return '<div class="ring-item"><div class="ring-box">' +
+        '<svg class="ring" viewBox="0 0 64 64">' +
+        '<defs><linearGradient id="' + gid + '" x1="0%" y1="0%" x2="100%" y2="100%">' +
+        '<stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#22d3ee"/></linearGradient></defs>' +
+        '<circle class="ring-bg" cx="32" cy="32" r="26"></circle>' +
+        '<circle class="ring-fg ' + pctCls + '"' + (liveId ? ' id="' + liveId + '-ring"' : "") + ' cx="32" cy="32" r="26" stroke="url(#' + gid + ')" stroke-dasharray="' + RING_C + '" stroke-dashoffset="' + off + '"></circle></svg>' +
+        '<div class="ring-val" ' + (liveId ? 'id="' + liveId + '"' : "") + ">" + pct.toFixed(0) + '<i>%</i></div></div>' +
+        '<div class="ring-label">' + label + "</div>" +
+        '<div class="ring-sub">' + sub + "</div></div>";
+    }
+    var diskRings = (s.disks || []).slice(0, 2).map(function(dk2, i) {
+      return ring(dk2.path === "/" ? "系统盘" : "盘 " + dk2.path, dk2.usage_percent || 0, "已用 " + fmtBytes(dk2.used), i === 0 ? "live-disk" : "");
     }).join("");
 
-    var html = '<div class="kpi-strip">' +
+    var html = '<div class="dash-wrap">' + guideHtml + '<div class="kpi-strip">' +
       kpi("globe", "#38bdf8", sites.length, "网站", "websites") +
       kpi("database", "#60a5fa", dbTotal, "数据库", "databases") +
       kpi("cube", "#0ea5e9", dk.running ? dk.runningCount + "/" + dk.containers : "-", "容器", "docker") +
@@ -65,17 +103,18 @@ PAGES.dashboard = {
       kpi("pulse", upDown ? "#f56c6c" : "#4ade80", ups.length ? (ups.length - upDown) + "/" + ups.length : "-", "拨测正常", "monitorhub") +
       "</div>" +
 
-      '<div class="dash-grid" style="margin-top:14px">' +
-      '<div class="card card-hover"><div class="card-title">系统监控<span class="mon-net">' +
+      '<div class="card card-hover card-mon" style="margin-top:14px"><div class="card-title">系统监控<span class="mon-live">实时</span><span class="mon-net">' +
       '<span class="net-line down">' + I("netDown") + ' <b id="live-rx">' + fmtSpeed(s.net_rx_speed) + '</b></span>' +
       '<span class="net-line up">' + I("netUp") + ' <b id="live-tx">' + fmtSpeed(s.net_tx_speed) + "</b></span></span></div>" +
-      bar("CPU 使用率", cpuPct, (s.cpu_cores || "-") + " 核 · " + esc((s.cpu_model || "-").split("@")[0].trim().slice(0, 24)), "", "live-cpu") +
-      bar("内存使用", memPct, fmtBytes(s.mem_used) + " / " + fmtBytes(s.mem_total), "", "live-mem") +
-      (hasSwap ? bar("Swap 交换分区", swapPct, fmtBytes(s.swap_used) + " / " + fmtBytes(s.swap_total), "", "live-swap") : "") +
-      bar("系统负载", Math.min(100, (s.load1 / Math.max(1, s.cpu_cores)) * 100), "1/5/15 分钟: " + s.load1 + " / " + s.load5 + " / " + s.load15, "", "live-load") +
-      diskRows +
-      "</div>" +
+      '<div class="ring-grid">' +
+      ring("CPU", cpuPct, (s.cpu_cores || "-") + " 核 · " + esc((s.cpu_model || "-").split("@")[0].trim().slice(0, 18)), "live-cpu") +
+      ring("内存", memPct, fmtBytes(s.mem_used) + " / " + fmtBytes(s.mem_total), "live-mem") +
+      (hasSwap ? ring("Swap", swapPct, fmtBytes(s.swap_used) + " / " + fmtBytes(s.swap_total), "live-swap") : "") +
+      ring("负载", Math.min(100, (s.load1 / Math.max(1, s.cpu_cores)) * 100), "1/5/15: " + s.load1 + " / " + s.load5 + " / " + s.load15, "live-load") +
+      diskRings +
+      "</div></div>" +
 
+      '<div class="dash-tri" style="margin-top:14px">' +
       '<div class="card card-hover"><div class="card-title">服务器信息</div><table class="info-table">' +
       "<tr><td>主机名</td><td>" + esc(s.hostname) + "</td></tr>" +
       "<tr><td>操作系统</td><td>" + esc(s.platform) + " " + esc(s.platform_v) + " (" + esc(s.os) + ")</td></tr>" +
@@ -83,7 +122,7 @@ PAGES.dashboard = {
       "<tr><td>IP 地址</td><td><span class=\"help\">内网</span> <span class=\"mono\">" + esc(s.ip) + "</span>" +
       (s.public_ip ? ' &nbsp;<span class="help">公网</span> <b class="mono">' + esc(s.public_ip) + "</b>" : ' &nbsp;<span class="help">公网获取中…</span>') + "</td></tr>" +
       '<tr><td>累计流量</td><td>收 ' + fmtBytes(s.net_rx_total) + " / 发 " + fmtBytes(s.net_tx_total) + "</td></tr>" +
-      "</table></div></div>" +
+      "</table></div>" +
 
       '<div class="grid-2" style="margin-top:14px">' +
       '<div class="card card-hover"><div class="card-title">面板信息</div><table class="info-table">' +
@@ -101,12 +140,22 @@ PAGES.dashboard = {
        ["clock", "计划任务", "cron", "#fb923c"], ["folder", "文件", "files", "#4ade80"], ["shield", "安全中心", "securityhub", "#f87171"],
        ["pulse", "监控中心", "monitorhub", "#f59e0b"], ["terminal", "终端", "terminal", "#64748b"]]
         .map(function(x) { return '<div class="quick-item" data-go="' + x[2] + '"><span class="qi-icon" style="color:' + x[3] + '">' + I(x[0]) + "</span><span>" + x[1] + "</span></div>"; }).join("") +
-      "</div></div></div>";
+      "</div></div></div></div>";
 
     el.innerHTML = html;
     el.querySelectorAll("[data-go]").forEach(function(n) {
       n.onclick = function() { location.hash = "#/" + n.getAttribute("data-go"); };
     });
+
+    // 新手引导:关闭后记住
+    (function() {
+      var gh = document.getElementById("guide-hide");
+      if (gh) gh.onclick = function() {
+        try { localStorage.setItem("kp_guide_hide", "1"); } catch (e) {}
+        var g = document.getElementById("guide-card");
+        if (g) g.remove();
+      };
+    })();
 
     // 证书状态
     (function() {
@@ -167,10 +216,11 @@ PAGES.dashboard = {
         [["live-cpu", s2.cpu_percent || 0], ["live-mem", s2.mem_percent || 0], ["live-swap", s2.swap_percent || 0],
          ["live-load", Math.min(100, (s2.load1 / Math.max(1, s2.cpu_cores)) * 100)],
          ["live-disk", s2.disks && s2.disks[0] ? s2.disks[0].usage_percent : 0]].forEach(function(pr) {
-          var b = document.getElementById(pr[0] + "-bar");
-          if (b) {
-            b.style.width = Math.min(100, pr[1]) + "%";
-            b.className = pr[1] >= 90 ? "danger" : pr[1] >= 75 ? "warn" : "";
+          var c = document.getElementById(pr[0] + "-ring");
+          if (c) {
+            var pct = Math.max(0, Math.min(100, pr[1] || 0));
+            c.style.strokeDashoffset = (163.36 * (1 - pct / 100)).toFixed(1);
+            c.setAttribute("class", "ring-fg " + (pct >= 90 ? "danger" : pct >= 75 ? "warn" : ""));
           }
         });
       } catch (e) {}
@@ -238,8 +288,8 @@ PAGES.websites = {
               if (days < 30) return '<span class="tag tag-warning">' + days + " 天后到期</span>";
               return '<span class="tag tag-success">' + days + " 天</span>";
             } },
-          { title: "创建时间", width: "96px", cls: "col-created", render: (r) => { var d = new Date(r.created_at); return isNaN(d) ? "-" : (d.getMonth()+1 + "/" + d.getDate() + " " + String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0")); } },
-          { title: "操作", width: "250px", cls: "col-ops", render: (r) =>
+          { title: "创建时间", width: "110px", cls: "col-created", render: (r) => { var d = new Date(r.created_at); return isNaN(d) ? "-" : (d.getMonth()+1 + "/" + d.getDate() + " " + String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0")); } },
+          { title: "操作", width: "290px", cls: "col-ops", render: (r) =>
             '<div class="ops"><button class="btn btn-xs btn-primary" data-files="' + r.id + '" title="管理网站文件">' + I("folderOpen") + ' 文件</button>' +
             '<button class="btn btn-xs btn-plain" data-visit="' + r.id + '">访问</button>' +
             '<button class="btn btn-xs btn-plain" data-ssl="' + r.id + '">HTTPS</button>' +
@@ -923,21 +973,28 @@ PAGES.websites = {
     var self = this;
     var m = modal({
       title: "创建网站", width: 640,
-      body: '<div class="wz-types">' +
-        '<div class="wz-type-card active" data-t="static"><b>静态站点</b><div>HTML/CSS/JS 纯静态网站</div></div>' +
-        '<div class="wz-type-card" data-t="php"><b>PHP 站点</b><div>WordPress/ThinkPHP 等 PHP 程序<br><span class="help" style="margin:0">需安装 PHP 运行时</span></div></div>' +
-        '<div class="wz-type-card" data-t="proxy"><b>反向代理</b><div>Go/Node/Java 等本地服务<br>或任意外部服务</div></div></div>' +
-        '<div class="form-item required" style="margin-top:14px"><label>域名</label><input class="input" id="w-domain" placeholder="多个域名用空格分隔,如:demo.com www.demo.com">' +
-        '<div class="help">请先将域名解析到本服务器</div></div>' +
+      body: '<div class="wz-sec"><span class="ws-n">1</span>选择站点类型</div>' +
+        '<div class="wz-types">' +
+        '<div class="wz-type-card active" data-t="static"><span class="wt-ico" style="--ic1:#22c55e">' + I("globe") + '</span><b>静态站点</b><div>HTML/CSS/JS 纯静态页面,最快最省资源</div></div>' +
+        '<div class="wz-type-card" data-t="php"><span class="wt-ico" style="--ic1:#8b5cf6">' + I("file") + '</span><b>PHP 站点</b><div>WordPress/ThinkPHP 等程序<br><span class="help" style="margin:0">需安装 PHP 运行时</span></div></div>' +
+        '<div class="wz-type-card" data-t="proxy"><span class="wt-ico" style="--ic1:#06b6d4">' + I("shuffle") + '</span><b>反向代理</b><div>把域名转发到本机端口或外部服务<br><span class="help" style="margin:0">Go/Node/Java 常用</span></div></div></div>' +
+        '<div class="wz-sec"><span class="ws-n">2</span>域名与端口</div>' +
+        '<div class="form-item required" style="margin-top:0"><div class="wz-domain-row">' +
+        '<input class="input" id="w-domain" placeholder="域名,多个用空格分隔">' +
+        '<input class="input" id="w-port" type="number" value="80" title="监听端口"></div>' +
+        '<div class="help">请先把域名解析到本服务器;右侧为监听端口(默认 80)</div></div>' +
+        '<div class="wz-sec"><span class="ws-n">3</span>站点配置</div>' +
         '<div id="w-dyn"></div>' +
-        '<div class="form-item"><label>监听端口</label><input class="input" id="w-port" type="number" value="80" style="max-width:180px"></div>' +
-        '<div class="wz-collapse"><label class="radio-line"><input type="checkbox" id="w-db-on"> 同时创建数据库(MySQL/MariaDB)</label>' +
-        '<div id="w-db-fields" style="display:none;margin-top:8px">' +
+        '<div class="wz-sec"><span class="ws-n">4</span>可选项</div>' +
+        '<div class="wz-db-card"><div class="wz-db-head" id="w-db-head"><span class="qi-icon" style="color:#60a5fa">' + I("database") + '</span>' +
+        '<div><b>同时创建数据库</b><span class="wz-db-sub">自动建库,部署程序时直接使用(MySQL/MariaDB)</span></div>' +
+        '<span class="switch" id="w-db-sw"></span></div>' +
+        '<div id="w-db-fields" style="display:none;margin-top:12px">' +
         '<div class="form-item"><label>数据库实例</label><select class="select" id="w-db-inst"></select></div>' +
         '<div class="form-item"><label>数据库名</label><input class="input mono" id="w-db-name" placeholder="小写字母/数字/下划线"></div>' +
-        '<div class="help">库名与访问密码创建后可在数据库页面管理;需要先安装并运行 MySQL/MariaDB</div></div></div>' +
-        '<div class="form-item"><label>备注</label><input class="input" id="w-remark" placeholder="站点用途说明(可选)"></div>',
-      footer: '<button class="btn btn-plain" data-act="no">取 消</button><button class="btn btn-primary" data-act="yes">创 建</button>',
+        '<div class="help">库名与访问密码创建后可在数据库页面管理;需先安装并运行 MySQL/MariaDB</div></div></div>' +
+        '<div class="form-item" style="margin-top:14px"><label>备注</label><input class="input" id="w-remark" placeholder="站点用途说明(可选)"></div>',
+      footer: '<button class="btn btn-plain" data-act="no">取 消</button><button class="btn btn-primary" data-act="yes">' + I("plus") + ' 创 建</button>',
     });
     var curType = "static";
     var dyn = qs("#w-dyn", m.el);
@@ -979,10 +1036,12 @@ PAGES.websites = {
     }
     qsa(".wz-type-card", m.el).forEach(function(c) { c.onclick = function() { renderDyn(c.getAttribute("data-t")); }; });
     renderDyn("static");
-    // 数据库可选
-    qs("#w-db-on", m.el).onchange = function() {
-      qs("#w-db-fields", m.el).style.display = this.checked ? "" : "none";
-      if (this.checked) {
+    // 数据库可选(滑块开关)
+    qs("#w-db-sw", m.el).onclick = function() {
+      this.classList.toggle("on");
+      var on = this.classList.contains("on");
+      qs("#w-db-fields", m.el).style.display = on ? "" : "none";
+      if (on) {
         api("/db/instances").then(function(list) {
           var sel = qs("#w-db-inst", m.el);
           if (!sel) return;
@@ -1014,7 +1073,7 @@ PAGES.websites = {
         if (pk && pk.value) body.php_key = pk.value;
       }
       // 可选数据库
-      if (qs("#w-db-on", m.el).checked) {
+      if (qs("#w-db-sw", m.el).classList.contains("on")) {
         var inst = qs("#w-db-inst", m.el).value;
         var dbname = qs("#w-db-name", m.el).value.trim();
         if (!inst) { toast("没有可用的数据库实例", "error"); return; }
@@ -1657,40 +1716,40 @@ PAGES.websites = {
     } catch (e) {}
     const mainDomain = site.domain.split(" ")[0];
     const m = modal({
-      title: "HTTPS 设置 · " + mainDomain, width: 600,
+      title: "HTTPS 设置 · " + mainDomain, width: 660,
       body: `
-        <div class="form-item"><label>绑定状态</label>
-          <div>${site.ssl_cert_id ? '<span class="tag tag-success">已启用 HTTPS</span>' : '<span class="tag tag-info">未启用</span>'}</div></div>
-        <div class="form-item"><label>当前使用的证书</label>
-          <select class="select" id="ssl-cert"><option value="">不启用 HTTPS</option>
-            ${certs.map((c) => '<option value="' + esc(c.id) + '"' + (c.id === site.ssl_cert_id ? " selected" : "") + ">" + esc(c.name) + (c.expire ? "(到期 " + esc(c.expire) + (c.acme ? " · LE" : "") + (c.profile === "shortlived" ? " · 短期" : "") + ")" : "") + "</option>").join("")}
-          </select>
-          <div style="margin-top:6px"><button class="btn btn-xs btn-danger-plain" id="ssl-cert-del">删除选中的证书</button>
-          <span class="help" style="margin:0 0 0 8px">在上方列表选中要删除的证书再点删除;文件一并移除,不可恢复</span></div>
-          <div class="help" id="ssl-cert-count">已有 ${certs.length} 张证书;LE 证书剩余不足 30 天自动续期(IP 短期证书不足 3 天自动续期)</div></div>
+        <div class="ssl-head-card">
+          <span class="ssl-head-ico" style="--ic1:${site.ssl_cert_id ? "#22c55e" : "#94a3b8"}">${I("key")}</span>
+          <div class="ssl-head-txt"><b>${site.ssl_cert_id ? "HTTPS 已启用" : "HTTPS 未启用"}</b>
+          <span>${esc(mainDomain)} · ${site.ssl_cert_id ? "更换证书或调整下方选项后保存" : "选择下方任一方式开启 HTTPS"}</span></div>
+        </div>
+        <div class="wz-types" style="margin:14px 0 4px">
+          <div class="wz-type-card ssl-tab active" data-ssl-tab="acme"><span class="wt-ico" style="--ic1:#22c55e">${I("bolt")}</span><b>免费证书</b><div>Let's Encrypt 自动续期<span class="help" style="margin:0">推荐</span></div></div>
+          <div class="wz-type-card ssl-tab" data-ssl-tab="upload"><span class="wt-ico" style="--ic1:#8b5cf6">${I("upload")}</span><b>自有证书</b><div>商业证书上传<span class="help" style="margin:0">PEM 格式</span></div></div>
+          <div class="wz-type-card ssl-tab" data-ssl-tab="selfsign"><span class="wt-ico" style="--ic1:#f59e0b">${I("key")}</span><b>自签证书</b><div>本地测试用<span class="help" style="margin:0">浏览器会提示不安全</span></div></div>
+        </div>
 
-        <div class="waf-set-sec" style="padding:14px 16px 12px"><div class="waf-sec-head">${I("bolt")}免费证书(ACME)<span class="tag tag-success" style="margin-left:2px">推荐</span></div>
-          <div class="settings-hint" style="margin:0 0 10px">自动申请、自动续期;Let's Encrypt 适合绝大多数网站;ZeroSSL 填申请邮箱即可自动注册(自动获取 EAB);Google Trust Services 需在其控制台手动获取 EAB 凭据</div>
-          ${/^\d{1,3}(\.\d{1,3}){3}$/.test(mainDomain) ? '<div class="help" style="margin:-4px 0 10px;color:var(--warn,#f59e0b)">当前站点绑定的是 IP 地址:将自动申请 Let\'s Encrypt IP 证书(shortlived 档案,有效期约 6 天,到期前 3 天自动续期;需该 IP 的 80 端口对外开放)</div>' : ""}
-          <div class="form-item"><label>证书服务商(CA)</label>
-            <select class="select" id="acme-provider" style="max-width:320px"></select>
-            <div class="help" id="acme-provider-hint"></div></div>
-          <div id="acme-eab-row" style="display:none">
-            <div class="form-item"><label>EAB KeyID</label><input class="input" id="acme-eab-kid" value="${esc(acmeCfg.eab_key_id || "")}" placeholder="在 CA 官网获取" style="max-width:320px"></div>
-            <div class="form-item"><label>EAB HMAC</label><input class="input" id="acme-eab-hmac" value="${esc(acmeCfg.eab_hmac || "")}" placeholder="在 CA 官网获取" style="max-width:320px"></div>
-          </div>
-          <div class="form-item"><label>申请邮箱</label>
-            <input class="input" id="acme-email" value="${esc(acmeCfg.email || "")}" placeholder="用于到期提醒,如 me@example.com"></div>
+        <div id="ssl-tab-acme">
+        <div class="wz-sec"><span class="ws-n">1</span>申请免费证书(Let's Encrypt / ZeroSSL / Google)</div>
+        <div class="settings-hint" style="margin:0 0 10px">自动申请、自动续期;Let's Encrypt 适合绝大多数网站;ZeroSSL 填申请邮箱即可自动注册(自动获取 EAB);Google Trust Services 需在其控制台手动获取 EAB 凭据</div>
+        ${/^\d{1,3}(\.\d{1,3}){3}$/.test(mainDomain) ? '<div class="help" style="margin:-4px 0 10px;color:var(--warn,#f59e0b)">当前站点绑定的是 IP 地址:将自动申请 Let\'s Encrypt IP 证书(shortlived 档案,有效期约 6 天,到期前 3 天自动续期;需该 IP 的 80 端口对外开放)</div>' : ""}
+        <div class="form-item"><label>证书服务商(CA)</label>
+          <select class="select" id="acme-provider" style="max-width:320px"></select>
+          <div class="help" id="acme-provider-hint"></div></div>
+        <div class="form-item"><label>申请邮箱</label>
+          <input class="input" id="acme-email" value="${esc(acmeCfg.email || "")}" placeholder="用于到期提醒,如 me@example.com"></div>
+        <div class="form-item"><label>申请域名(站点绑定的域名,勾选要签入证书的)</label>
+          <div id="acme-domain-list" style="display:flex;flex-direction:column;gap:2px"></div>
+          <label class="radio-line" style="margin-top:6px"><input type="checkbox" id="acme-wildcard"> 自动组合泛域名(*.主域:一张证书覆盖主域和所有子域名,只需一条 CNAME/TXT;HTTP 验证下勾选会自动切换到 DNS API)</label>
+          <div class="help" id="acme-domain-plan"></div></div>
+        <details class="hc-item" style="margin:10px 0"><summary>高级选项(验证方式 / DNS API / 测试环境)</summary>
+          <div class="hc-a">
           <div class="form-item"><label>验证方式</label>
             <select class="select" id="acme-method" style="max-width:320px">
               <option value="http">HTTP 文件验证(推荐,需域名解析到本服务器且 80 端口可达)</option>
               <option value="dnsapi">DNS API 自动验证(支持通配符,TXT 记录自动添加,推荐批量/通配符场景)</option>
               <option value="dns">DNS 手动验证(支持通配符/无法开放 80 端口的场景,签发时需手动添加 TXT 记录)</option>
             </select></div>
-          <div class="form-item"><label>申请域名(站点绑定的域名,勾选要签入证书的)</label>
-            <div id="acme-domain-list" style="display:flex;flex-direction:column;gap:2px"></div>
-            <label class="radio-line" style="margin-top:6px"><input type="checkbox" id="acme-wildcard"> 自动组合泛域名(*.主域:一张证书覆盖主域和所有子域名,只需一条 CNAME/TXT;HTTP 验证下勾选会自动切换到 DNS API)</label>
-            <div class="help" id="acme-domain-plan"></div></div>
           <div id="acme-dnsapi-row" style="display:none">
             <div class="form-item"><label>DNS 服务商</label>
               <select class="select" id="acme-dnsapi-provider" style="max-width:320px"></select>
@@ -1704,25 +1763,50 @@ PAGES.websites = {
               <input class="input" id="acme-alias" placeholder="可留空;面板自动跟随主域 CNAME" style="max-width:320px">
               <div class="help">可选:把主域挑战名(_acme-challenge.主域名)CNAME 到你控制的自定义记录,TXT 记录统一维护在该记录下;面板会自动跟随 CNAME 并提示 TXT 应加在哪条记录上</div></div>
           </div>
+          <div id="acme-eab-row" style="display:none">
+            <div class="form-item"><label>EAB KeyID</label><input class="input" id="acme-eab-kid" value="${esc(acmeCfg.eab_key_id || "")}" placeholder="在 CA 官网获取" style="max-width:320px"></div>
+            <div class="form-item"><label>EAB HMAC</label><input class="input" id="acme-eab-hmac" value="${esc(acmeCfg.eab_hmac || "")}" placeholder="在 CA 官网获取" style="max-width:320px"></div>
+          </div>
           <label class="radio-line"><input type="checkbox" id="acme-staging" ${acmeCfg.staging ? "checked" : ""}> 使用测试环境(staging,不限频但浏览器不信任,验证流程用)</label>
-          <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="ssl-acme-issue">${I("bolt")} 申请证书并启用 HTTPS</button></div></div>
+          </div></details>
+        <div style="margin-top:12px"><button class="btn btn-primary" id="ssl-acme-issue">${I("bolt")} 申请证书并启用 HTTPS</button></div></div>
 
-        <div class="waf-set-sec" style="padding:14px 16px 12px;margin-top:12px"><div class="waf-sec-head">${I("upload")}自有证书(商业证书)</div>
-          <div class="settings-hint" style="margin:0 0 10px">已购买的商业证书(如阿里云/腾讯云/StormBytes 签发):下载 PEM 格式后,选择文件或直接粘贴内容</div>
-          <div style="margin-bottom:8px"><button class="btn btn-sm btn-plain" id="ssl-pick-file">${I("upload")} 选择证书文件</button>
-            <span class="help" style="margin:0 0 0 8px">支持 .pem / .crt / .key / .txt,自动区分证书与私钥</span></div>
-          <textarea class="textarea" id="ssl-cert-pem" rows="3" placeholder="证书内容(BEGIN CERTIFICATE ...)"></textarea>
-          <textarea class="textarea" id="ssl-key-pem" rows="3" placeholder="私钥内容(BEGIN PRIVATE KEY ...)" style="margin-top:6px"></textarea>
-          <div style="margin-top:10px"><button class="btn btn-sm btn-primary" id="ssl-upload">${I("bolt")} 保存并启用 HTTPS</button></div></div>
+        <div id="ssl-tab-upload" style="display:none">
+        <div class="wz-sec"><span class="ws-n">1</span>上传自有证书(商业证书)</div>
+        <div class="settings-hint" style="margin:0 0 10px">已购买的商业证书(如阿里云/腾讯云/StormBytes 签发):下载 PEM 格式后,选择文件或直接粘贴内容</div>
+        <div style="margin-bottom:8px"><button class="btn btn-sm btn-plain" id="ssl-pick-file">${I("upload")} 选择证书文件</button>
+          <span class="help" style="margin:0 0 0 8px">支持 .pem / .crt / .key / .txt,自动区分证书与私钥</span></div>
+        <textarea class="textarea" id="ssl-cert-pem" rows="3" placeholder="证书内容(BEGIN CERTIFICATE ...)"></textarea>
+        <textarea class="textarea" id="ssl-key-pem" rows="3" placeholder="私钥内容(BEGIN PRIVATE KEY ...)" style="margin-top:6px"></textarea>
+        <div style="margin-top:10px"><button class="btn btn-primary" id="ssl-upload">${I("bolt")} 保存并启用 HTTPS</button></div></div>
 
-        <div class="waf-set-sec" style="padding:14px 16px 12px;margin-top:12px"><div class="waf-sec-head">${I("key")}自签证书<span class="settings-hint" style="margin:0 0 0 4px">仅本地/内网测试用,浏览器会提示不安全</span></div>
-          <button class="btn btn-sm btn-plain" id="ssl-selfsign">${I("key")} 生成自签证书(10年)并启用</button></div>
+        <div id="ssl-tab-selfsign" style="display:none">
+        <div class="wz-sec"><span class="ws-n">1</span>生成自签证书(测试用)</div>
+        <div class="settings-hint" style="margin:0 0 10px">一键生成本地测试证书(10 年),浏览器会提示不安全,生产环境请用前两种方式</div>
+        <button class="btn btn-primary" id="ssl-selfsign">${I("key")} 生成自签证书(10年)并启用</button></div>
 
-        <div style="margin-top:14px">
-          <div class="form-item"><label class="radio-line"><input type="checkbox" id="ssl-redirect" ${site.ssl_redirect ? "checked" : ""}> HTTP 强制跳转 HTTPS(仅监听 80 端口时生效)</label></div>
-          <div class="form-item"><label class="radio-line"><input type="checkbox" id="ssl-http2" ${site.http2 ? "checked" : ""}> HTTP/2(多路复用,页面加载更快)</label></div>
-          <div class="form-item"><label class="radio-line"><input type="checkbox" id="ssl-hsts" ${site.hsts ? "checked" : ""}> HSTS(强制浏览器一年内只用 HTTPS 访问本站,开启后短期难以回退)</label></div></div>`,
+        <div class="wz-sec"><span class="ws-n">2</span>HTTPS 选项与证书库</div>
+        <div class="form-item"><label class="radio-line"><input type="checkbox" id="ssl-redirect" ${site.ssl_redirect ? "checked" : ""}> HTTP 强制跳转 HTTPS(仅监听 80 端口时生效)</label></div>
+        <div class="form-item"><label class="radio-line"><input type="checkbox" id="ssl-http2" ${site.http2 ? "checked" : ""}> HTTP/2(多路复用,页面加载更快)</label></div>
+        <div class="form-item"><label class="radio-line"><input type="checkbox" id="ssl-hsts" ${site.hsts ? "checked" : ""}> HSTS(强制浏览器一年内只用 HTTPS 访问本站,开启后短期难以回退)</label></div>
+        <div class="form-item"><label>当前使用的证书</label>
+          <select class="select" id="ssl-cert"><option value="">不启用 HTTPS</option>
+            ${certs.map((c) => '<option value="' + esc(c.id) + '"' + (c.id === site.ssl_cert_id ? " selected" : "") + ">" + esc(c.name) + (c.expire ? "(到期 " + esc(c.expire) + (c.acme ? " · LE" : "") + (c.profile === "shortlived" ? " · 短期" : "") + ")" : "") + "</option>").join("")}
+          </select>
+          <div style="margin-top:6px"><button class="btn btn-xs btn-danger-plain" id="ssl-cert-del">删除选中的证书</button>
+          <span class="help" style="margin:0 0 0 8px">在上方列表选中要删除的证书再点删除;文件一并移除,不可恢复</span></div>
+          <div class="help" id="ssl-cert-count">已有 ${certs.length} 张证书;LE 证书剩余不足 30 天自动续期(IP 短期证书不足 3 天自动续期)</div></div>`,
       footer: '<button class="btn btn-plain" data-act="no">取 消</button><button class="btn btn-primary" data-act="yes">保 存</button>',
+    });
+    // 三种证书方式 tab 切换(免费/自有/自签)
+    qsa(".ssl-tab", m.el).forEach(function(c) {
+      c.onclick = function() {
+        qsa(".ssl-tab", m.el).forEach(function(x) { x.classList.toggle("active", x === c); });
+        ["acme", "upload", "selfsign"].forEach(function(t) {
+          var d = qs("#ssl-tab-" + t, m.el);
+          if (d) d.style.display = c.getAttribute("data-ssl-tab") === t ? "" : "none";
+        });
+      };
     });
     if (site.ssl_cert_id) {
       const dl = document.createElement("button");
@@ -2060,9 +2144,11 @@ PAGES.apps = {
       if (!shown.length) html += '<div class="help" style="padding:30px;text-align:center;width:100%">没有匹配的应用</div>';
       shown.forEach(function(t, i) {
         var inst = instances.find(function(x) { return x.key === t.key; });
+        // 新手推荐标识:建站三件套
+        var rec = { php: "建站必装", mysql: "网站数据库", wordpress: "一键建站" }[t.key];
         html += '<div class="app-card" style="animation-delay:' + Math.min(i * 0.04, 0.4) + 's">';
         html += '<div class="app-head">' + appIcon(t, 44);
-        html += '<div><h4 style="font-size:14px;font-weight:600">' + esc(t.name) + '</h4><span class="tag tag-primary">' + esc(t.category) + '</span></div></div>';
+        html += '<div><h4 style="font-size:14px;font-weight:600">' + esc(t.name) + (rec ? ' <span class="tag tag-success" title="新手建站推荐">' + esc(rec) + "</span>" : "") + '</h4><span class="tag tag-primary">' + esc(t.category) + '</span></div></div>';
         html += '<p style="font-size:12px;color:var(--text-3);flex:1;min-height:32px;line-height:1.5;margin:6px 0">' + esc(t.desc) + '</p>';
         html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:auto">';
         html += '<span class="tag tag-info">' + esc(t.version) + '</span>';
@@ -6517,6 +6603,7 @@ PAGES.securityhub = {
       if (this.tabsDef[i].page === cur) this.tab = this.tabsDef[i].key;
     }
     var html = '<div class="card"><div class="card-title">安全中心</div>' +
+      '<div class="help" style="margin:-4px 0 10px">这里是面板的安全防线:WAF 拦截黑客攻击,防火墙管理端口开关,SSH 安全防暴力破解,日志可查登录与操作记录。建议新手至少开启「系统防火墙」。</div>' +
       '<div class="hub-tabs">';
     this.tabsDef.forEach(function(t) {
       html += '<div class="hub-tab ' + (self.tab === t.key ? "active" : "") + '" data-tab="' + t.key + '">' + t.label + "</div>";
@@ -6561,6 +6648,7 @@ PAGES.monitorhub = {
       if (this.tabsDef[i].page === cur) this.tab = this.tabsDef[i].key;
     }
     var html = '<div class="card"><div class="card-title">监控中心</div>' +
+      '<div class="help" style="margin:-4px 0 10px">网站打不开?在这里添加拨测监控,网站宕机自动发告警;还能管理进程、系统服务和排查网络问题。</div>' +
       '<div class="hub-tabs">';
     this.tabsDef.forEach(function(t) {
       html += '<div class="hub-tab ' + (self.tab === t.key ? "active" : "") + '" data-tab="' + t.key + '">' + t.label + "</div>";
@@ -6739,7 +6827,7 @@ PAGES.docker = {
       '<span class="tag tag-info">共 ' + list.length + " 个容器</span>" +
       '<button class="btn btn-sm btn-primary" id="dk-create">' + I("plus") + " 创建容器</button></div>";
     if (!list.length) {
-      html += emptyState("cube", "还没有容器", "去应用商店一键部署,或点击创建容器");
+      html += emptyState("cube", "还没有容器", "去应用商店一键部署,或点击创建容器", '<a class="btn btn-sm btn-primary" href="#/apps">去应用商店部署</a>');
     } else {
       html += '<div class="table-wrap"><table class="table"><thead><tr><th>名称</th><th>镜像</th><th style="width:110px">状态</th><th style="width:150px">CPU / 内存</th><th>端口</th><th style="width:250px">操作</th></tr></thead><tbody>';
       list.forEach(function(c) {
@@ -6975,3 +7063,316 @@ function cmModeOf(path) {
   };
   return map[ext] || (ext === "txt" ? "" : "text/plain");
 }
+
+/* ================= 节点管理(多机监控,UI 对标 1Panel 节点管理:工具栏+表格+分区表单+检查清单) ================= */
+PAGES.nodes = {
+  title: "节点管理",
+  timer: null,
+  group: "",
+  kw: "",
+  _kwTimer: null,
+  async render(el) {
+    var self = this;
+    el.innerHTML =
+      '<div class="page-head"><div class="tabs"><span class="tab on">' + I("server") + ' 节点管理</span></div>' +
+      '<div class="tabs-actions"><button class="btn btn-sm btn-plain" id="nd-refresh">' + I("refresh") + ' 刷新</button></div></div>' +
+      '<div class="card">' +
+      '<div class="nd-toolbar"><div class="nd-toolbar-left">' +
+      '<button class="btn btn-sm btn-primary" id="nd-add">' + I("plus") + ' 添加节点</button>' +
+      '<span id="nd-batch" style="display:none;align-items:center;gap:10px"><span class="help" id="nd-sel-n"></span>' +
+      '<button class="btn btn-sm btn-danger-plain" id="nd-batch-del">批量删除</button></span></div>' +
+      '<div class="nd-toolbar-right"><select class="select" id="nd-group-sel"><option value="">全部分组</option></select>' +
+      '<input class="input" id="nd-kw" placeholder="搜索名称 / 地址 / 备注" style="width:190px"></div></div>' +
+      '<div class="help" style="margin-bottom:10px">统一纳管多台服务器:SSH 免 Agent 采集 CPU/内存/磁盘/网络,识别对端坤面板并可直达、重启或一键安装。凭据仅保存在本机数据目录。</div>' +
+      '<div id="nd-body">' + skeletonTable(3, 6) + "</div></div>";
+    qs("#nd-add", el).onclick = function() { self.nodeDialog(el, null); };
+    qs("#nd-refresh", el).onclick = function() { var b = qs("#nd-refresh", el); b.disabled = true; self.draw(el, true).then(function() { if (b && b.isConnected) b.disabled = false; }); };
+    qs("#nd-group-sel", el).onchange = function() { self.group = qs("#nd-group-sel", el).value; self.draw(el); };
+    qs("#nd-kw", el).oninput = function() {
+      clearTimeout(self._kwTimer);
+      self._kwTimer = setTimeout(function() { self.kw = qs("#nd-kw", el) ? qs("#nd-kw", el).value.trim() : ""; self.draw(el); }, 250);
+    };
+    await this.draw(el);
+    setPageTimer(function() { if (document.visibilityState === "visible") self.draw(el); }, 15000);
+  },
+
+  async draw(el, force) {
+    var self = this;
+    var body = qs("#nd-body", el);
+    if (!body) return;
+    var data;
+    try { data = await api("/nodes" + (force ? "?refresh=1" : "")); }
+    catch (e) { body.innerHTML = emptyState("warn", "加载失败", e.message); return; }
+    if (!qs("#nd-body", el)) return;
+    var list = (data && data.nodes) || [];
+    // 分组筛选下拉(1Panel 工具栏右侧过滤)
+    var sel = qs("#nd-group-sel", el);
+    if (sel) {
+      var groups = [];
+      list.forEach(function(n) { if (n.group && groups.indexOf(n.group) < 0) groups.push(n.group); });
+      groups.sort();
+      sel.innerHTML = '<option value="">全部分组</option>' + groups.map(function(g) {
+        return '<option value="' + esc(g) + '"' + (g === self.group ? " selected" : "") + ">" + esc(g) + "</option>";
+      }).join("");
+    }
+    var total = list.length;
+    if (self.kw) {
+      var k = self.kw.toLowerCase();
+      list = list.filter(function(n) { return (n.name + " " + n.host + " " + (n.desc || "") + " " + (n.group || "")).toLowerCase().indexOf(k) >= 0; });
+    }
+    if (self.group) list = list.filter(function(n) { return n.group === self.group; });
+    if (!list.length) {
+      body.innerHTML = emptyState("server", self.kw || self.group ? "没有匹配的节点" : "还没有节点", "添加服务器 IP 与 SSH 凭据,即可统一监控与快捷操作",
+        self.kw || self.group ? "" : '<button class="btn btn-sm btn-primary" id="nd-empty-add">' + I("plus") + " 添加第一个节点</button>");
+      var ndEmptyAdd = qs("#nd-empty-add", body);
+      if (ndEmptyAdd) ndEmptyAdd.onclick = function() { self.nodeDialog(el, null); };
+      return;
+    }
+    var rows = "";
+    list.forEach(function(n) {
+      var s = n.snap || {};
+      var statusCell = s.online
+        ? '<span class="tag tag-success"><span class="dot on"></span>在线</span>'
+        : '<span class="tag tag-danger" title="' + esc(s.error || "连接失败") + '"><span class="dot"></span>离线</span>';
+      var resCell;
+      if (s.online) {
+        resCell = self.resLine("CPU", s.cpu_percent, (s.cpu_percent || 0).toFixed(1) + "%") +
+          self.resLine("内存", s.mem_total ? s.mem_used / s.mem_total * 100 : 0, fmtBytes(s.mem_used || 0) + (s.mem_total ? " · " + (s.mem_used / s.mem_total * 100).toFixed(0) + "%" : "")) +
+          self.resLine("磁盘", s.disk_total ? s.disk_used / s.disk_total * 100 : 0, (s.disk_total ? (s.disk_used / s.disk_total * 100).toFixed(0) : 0) + "%");
+      } else resCell = '<span class="help">-</span>';
+      var runCell = s.online
+        ? fmtUptime(s.uptime_sec || 0) + '<div class="help">负载 ' + (s.load1 != null ? s.load1.toFixed(2) : "-") + (s.cores ? " · " + s.cores + " 核" : "") + "</div>"
+        : '<span class="help">-</span>';
+      var panelCell = s.online
+        ? (s.panel_installed
+          ? '<span class="tag tag-success">坤面板' + (s.panel_port ? " :" + s.panel_port : "") + "</span>"
+          : '<span class="tag">未安装</span>')
+        : '<span class="help">-</span>';
+      var ops = '<button class="btn btn-xs btn-plain" data-nd-edit="' + esc(n.id) + '">' + I("edit") + " 编辑</button>";
+      if (s.panel_installed && n.panel_url) ops += '<button class="btn btn-xs btn-plain" data-nd-open="' + esc(n.id) + '">' + I("external") + " 打开面板</button>";
+      if (s.panel_installed) ops += '<button class="btn btn-xs btn-plain" data-nd-rp="' + esc(n.id) + '">' + I("restart") + " 重启面板</button>";
+      else if (s.online) ops += '<button class="btn btn-xs btn-plain" data-nd-inst="' + esc(n.id) + '">' + I("download") + " 安装面板</button>";
+      ops += '<button class="btn btn-xs btn-danger-plain" data-nd-reboot="' + esc(n.id) + '">重启服务器</button>';
+      ops += '<button class="btn btn-xs btn-danger-plain" data-nd-del="' + esc(n.id) + '">' + I("trash") + " 删除</button>";
+      rows += "<tr>" +
+        '<td><input type="checkbox" class="nd-sel" data-id="' + esc(n.id) + '"></td>' +
+        '<td><b>' + esc(n.name) + '</b><div class="mono nd-host-sub">' + esc(n.host) + ":" + n.port + "</div></td>" +
+        "<td>" + statusCell + "</td>" +
+        "<td>" + (n.group ? esc(n.group) : '<span class="help">-</span>') + "</td>" +
+        '<td class="nd-res">' + resCell + "</td>" +
+        "<td>" + runCell + "</td>" +
+        "<td>" + panelCell + "</td>" +
+        '<td><span class="ellipsis" style="max-width:150px" title="' + esc(n.desc || "") + '">' + (n.desc ? esc(n.desc) : '<span class="help">-</span>') + "</span></td>" +
+        '<td><div class="ops" style="max-width:220px">' + ops + "</div></td></tr>";
+    });
+    body.innerHTML = '<div class="table-wrap"><table class="table"><thead><tr>' +
+      '<th style="width:36px"><input type="checkbox" id="nd-sel-all" title="全选"></th>' +
+      "<th>节点名称</th><th style=\"width:84px\">状态</th><th style=\"width:84px\">分组</th>" +
+      '<th style="width:200px">资源</th><th style="width:150px">运行</th><th style="width:104px">面板</th>' +
+      "<th>描述</th><th style=\"width:200px\">操作</th></tr></thead><tbody>" + rows + "</tbody></table></div>";
+    // 勾选与批量删除
+    var syncBatch = function() {
+      var boxes = qsa(".nd-sel", body);
+      var picked = boxes.filter(function(c) { return c.checked; });
+      var bar = qs("#nd-batch", el);
+      if (bar) {
+        bar.style.display = picked.length ? "inline-flex" : "none";
+        var cnt = qs("#nd-sel-n", el);
+        if (cnt) cnt.textContent = "已选 " + picked.length + " / " + boxes.length + " 台";
+      }
+      var all = qs("#nd-sel-all", body);
+      if (all) all.checked = boxes.length > 0 && picked.length === boxes.length;
+    };
+    var allBox = qs("#nd-sel-all", body);
+    if (allBox) allBox.onchange = function() {
+      qsa(".nd-sel", body).forEach(function(c) { c.checked = allBox.checked; });
+      syncBatch();
+    };
+    qsa(".nd-sel", body).forEach(function(c) { c.onchange = syncBatch; });
+    var batchBtn = qs("#nd-batch-del", el);
+    if (batchBtn) batchBtn.onclick = async function() {
+      var ids = qsa(".nd-sel", body).filter(function(c) { return c.checked; }).map(function(c) { return c.getAttribute("data-id"); });
+      if (!ids.length) return;
+      if (!(await confirmDlg("删除选中的 <b>" + ids.length + "</b> 个节点?仅移除纳管记录,不影响服务器本身。", { danger: true }))) return;
+      var fail = 0;
+      for (var i = 0; i < ids.length; i++) {
+        try { await api("/nodes/" + ids[i], { method: "DELETE" }); } catch (e) { fail++; }
+      }
+      toast(fail ? "已删除," + fail + " 个失败" : "已删除 " + (ids.length - fail) + " 个节点", fail ? "error" : "success");
+      self.draw(el);
+    };
+    var find = function(id) { return list.find(function(x) { return x.id === id; }); };
+    qsa("[data-nd-open]", body).forEach(function(b) {
+      b.onclick = function() {
+        var n = find(b.getAttribute("data-nd-open"));
+        if (n && n.panel_url) window.open(n.panel_url, "_blank");
+      };
+    });
+    qsa("[data-nd-rp]", body).forEach(function(b) {
+      b.onclick = async function() {
+        if (!(await confirmDlg("重启该节点上的坤面板服务?面板将短暂不可访问。", { danger: true }))) return;
+        try { await api("/nodes/" + b.getAttribute("data-nd-rp") + "/restart-panel", { method: "POST" }); toast("面板已重启"); self.draw(el, true); }
+        catch (e) { toast(e.message, "error"); }
+      };
+    });
+    qsa("[data-nd-inst]", body).forEach(function(b) {
+      b.onclick = async function() {
+        if (!(await confirmDlg("在该节点上安装坤面板?将执行官方一键安装脚本(需要外网),完成后自动识别。"))) return;
+        try {
+          await api("/nodes/" + b.getAttribute("data-nd-inst") + "/install-panel", { method: "POST" });
+          toast("安装任务已开始", "success", 4000, function() { taskCenter(); });
+        } catch (e) { toast(e.message, "error"); }
+      };
+    });
+    qsa("[data-nd-reboot]", body).forEach(function(b) {
+      b.onclick = async function() {
+        var n = find(b.getAttribute("data-nd-reboot"));
+        if (!(await confirmDlg("重启服务器 <b>" + esc(n ? n.name : "") + "</b>?整个服务器将重启,耗时 1-2 分钟。", { danger: true }))) return;
+        try { await api("/nodes/" + b.getAttribute("data-nd-reboot") + "/reboot", { method: "POST" }); toast("重启指令已下发,节点将短暂离线"); }
+        catch (e) { toast(e.message, "error"); }
+      };
+    });
+    qsa("[data-nd-edit]", body).forEach(function(b) {
+      b.onclick = function() { self.nodeDialog(el, find(b.getAttribute("data-nd-edit"))); };
+    });
+    qsa("[data-nd-del]", body).forEach(function(b) {
+      b.onclick = async function() {
+        var n = find(b.getAttribute("data-nd-del"));
+        if (!(await confirmDlg("删除节点 <b>" + esc(n ? n.name : "") + "</b>?仅移除纳管记录,不影响服务器本身。", { danger: true }))) return;
+        try { await api("/nodes/" + b.getAttribute("data-nd-del"), { method: "DELETE" }); toast("已删除"); self.draw(el); }
+        catch (e) { toast(e.message, "error"); }
+      };
+    });
+  },
+
+  // 资源迷你条(1Panel 资源列:标签+细条+数值)
+  resLine(label, pct, text) {
+    var p = Math.max(0, Math.min(100, pct || 0));
+    var cls = p >= 90 ? "bad" : p >= 70 ? "warn" : "ok";
+    return '<div class="nd-res-line"><span class="nd-res-label">' + label + '</span><span class="nd-res-track"><span class="nd-res-fill ' + cls + '" style="width:' + p.toFixed(1) + '%"></span></span><span class="nd-res-pct mono">' + esc(text) + "</span></div>";
+  },
+
+  // 添加/编辑弹窗(1Panel 式分区:连接信息 / 节点信息)
+  nodeDialog(el, node) {
+    var self = this;
+    var isEdit = !!node;
+    var m = modal({
+      title: isEdit ? "编辑节点 - " + esc(node.name) : "添加节点", width: 560,
+      body:
+        '<div class="nd-sec-title">连接信息</div>' +
+        '<div class="form-row2">' +
+        '<div class="form-item required"><label>主机地址</label><input class="input mono" id="nd-host" placeholder="IP 或域名" value="' + (isEdit ? esc(node.host) : "") + '"></div>' +
+        '<div class="form-item required"><label>SSH 端口</label><input class="input" id="nd-port" type="number" value="' + (isEdit ? node.port : 22) + '"></div></div>' +
+        '<div class="form-row2">' +
+        '<div class="form-item required"><label>用户名</label><input class="input" id="nd-user" placeholder="root" value="' + (isEdit ? esc(node.user) : "") + '"></div>' +
+        '<div class="form-item required"><label>密码</label><input class="input" id="nd-pass" type="password" placeholder="' + (isEdit ? "留空沿用已存密码" : "SSH 登录密码") + '"></div></div>' +
+        '<div class="nd-sec-title">节点信息</div>' +
+        '<div class="form-row2">' +
+        '<div class="form-item required"><label>名称</label><input class="input" id="nd-name" placeholder="如 生产-香港01" value="' + (isEdit ? esc(node.name) : "") + '"></div>' +
+        '<div class="form-item"><label>分组</label><input class="input" id="nd-group" placeholder="如 生产环境" value="' + (isEdit ? esc(node.group || "") : "") + '"></div></div>' +
+        '<div class="form-item"><label>备注</label><input class="input" id="nd-desc" value="' + (isEdit ? esc(node.desc || "") : "") + '"></div>' +
+        '<div class="form-item"><label>主机指纹(可选,TOFU)</label><input class="input mono" id="nd-fp" placeholder="可用性检查后自动回填" value="' + (isEdit ? esc(node.fingerprint || "") : "") + '">' +
+        '<div class="help">首次检查会回显服务器实际指纹,确认无误保存即可;入库后指纹漂移将拒绝连接(防劫持)。</div></div>',
+      footer: '<button class="btn btn-plain" data-act="no">取 消</button>' +
+        '<button class="btn btn-plain" data-act="check" id="nd-check-btn">' + I("pulse") + ' 可用性检查</button>' +
+        '<button class="btn btn-primary" data-act="yes">' + (isEdit ? "保 存" : "添 加") + "</button>",
+    });
+    var collect = function(withPass) {
+      return {
+        id: isEdit ? node.id : "",
+        name: qs("#nd-name", m.el).value.trim(),
+        group: qs("#nd-group", m.el).value.trim(),
+        host: qs("#nd-host", m.el).value.trim(),
+        port: parseInt(qs("#nd-port", m.el).value, 10) || 22,
+        user: qs("#nd-user", m.el).value.trim(),
+        password: withPass ? qs("#nd-pass", m.el).value : "",
+        fingerprint: qs("#nd-fp", m.el).value.trim(),
+        desc: qs("#nd-desc", m.el).value.trim(),
+      };
+    };
+    qs('[data-act="no"]', m.el).onclick = m.close;
+    qs('[data-act="check"]', m.el).onclick = function() {
+      var f = collect(true);
+      if (!f.host || !f.user) { toast("请先填写主机与用户名", "error"); return; }
+      self.checkDialog(f, function(res, fp) {
+        // 检查完成回写指纹
+        var fpInput = qs("#nd-fp", m.el);
+        if (fpInput && fp) fpInput.value = fp;
+        return fp;
+      });
+    };
+    qs('[data-act="yes"]', m.el).onclick = async function() {
+      var f = collect(true);
+      if (!f.name || !f.host || !f.user) { toast("名称、主机、用户名不能为空", "error"); return; }
+      if (!isEdit && !f.password) { toast("请填写 SSH 密码", "error"); return; }
+      try {
+        if (isEdit) {
+          await api("/nodes/" + node.id, { method: "PUT", body: f });
+          toast("已保存");
+        } else {
+          await api("/nodes", { method: "POST", body: f });
+          toast("已添加,正在采集节点状态");
+        }
+        m.close();
+        self.draw(el, true);
+      } catch (e) { toast(e.message, "error"); }
+    };
+  },
+
+  // 可用性检查小弹窗(1Panel 式:逐项打勾清单;openLayer 叠加在添加弹窗之上,不丢表单)
+  checkDialog(f, onDone) {
+    var m = openLayer({
+      title: "可用性检查", width: 400,
+      body:
+        '<div class="nd-ck-list">' +
+        '<div class="nd-ck" id="ck1"><span class="spinner spin-sm"></span> SSH 端口连通</div>' +
+        '<div class="nd-ck" id="ck2"><span class="spinner spin-sm"></span> 登录认证</div>' +
+        '<div class="nd-ck" id="ck3"><span class="spinner spin-sm"></span> 系统信息采集</div>' +
+        '<div class="nd-ck" id="ck4"><span class="spinner spin-sm"></span> 坤面板识别</div>' +
+        "</div>" +
+        '<div class="nd-ck" id="ck-fp" style="display:none"></div>',
+      footer: '<button class="btn btn-plain" data-act="no">关 闭</button>',
+    });
+    qs('[data-act="no"]', m.el).onclick = m.close;
+    var mark = function(id, ok, text) {
+      var el = qs("#" + id, m.el);
+      if (!el) return;
+      var label = el.textContent.replace(/^[\s\S]*?(\S.*)$/, "$1");
+      el.className = "nd-ck " + (ok === false ? "bad" : ok === "warn" ? "" : "ok");
+      el.innerHTML = (ok === false ? I("warn") : ok === "warn" ? I("info") : I("shield")) + " " + esc(label) + (text ? '<span class="nd-ck-note"> · ' + esc(text) + "</span>" : "");
+    };
+    api("/nodes/check", { method: "POST", body: f }).then(function(res) {
+      var s = (res && res.snap) || {};
+      var fp = (res && res.fingerprint) || "";
+      if (s.online) {
+        mark("ck1", true);
+        setTimeout(function() { mark("ck2", true); }, 260);
+        setTimeout(function() { mark("ck3", s.os ? true : "warn", s.os ? (s.hostname || "") + " · " + s.os + " · " + (s.cores || "?") + " 核" : "未取到系统信息"); }, 520);
+        setTimeout(function() {
+          mark("ck4", s.panel_installed ? true : "warn", s.panel_installed ? "已识别,端口 " + (s.panel_port || "?") : "未检测到(保存后可一键安装)");
+        }, 780);
+      } else {
+        var err = s.error || "连接失败";
+        var authFail = /auth|密码|password/i.test(err);
+        mark("ck1", authFail ? true : false, authFail ? "" : err.slice(0, 60));
+        setTimeout(function() { mark("ck2", false, authFail ? err.slice(0, 60) : ""); }, 260);
+        setTimeout(function() { mark("ck3", "warn", "已跳过"); }, 520);
+        setTimeout(function() { mark("ck4", "warn", "已跳过"); }, 780);
+      }
+      if (fp) {
+        var fpEl = qs("#ck-fp", m.el);
+        if (fpEl) {
+          fpEl.style.display = "block";
+          fpEl.className = "nd-ck";
+          fpEl.innerHTML = I("key") + ' 主机指纹:<span class="mono">' + esc(fp) + '</span><span class="nd-ck-note"> · 已回填表单</span>';
+        }
+      }
+      if (onDone) onDone(res, fp);
+    }).catch(function(e) {
+      ["ck1", "ck2", "ck3", "ck4"].forEach(function(id, i) {
+        setTimeout(function() { mark(id, i === 0 ? false : "warn", i === 0 ? e.message.slice(0, 60) : "已跳过"); }, i * 260);
+      });
+    });
+  },
+};
+

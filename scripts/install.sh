@@ -5,14 +5,18 @@
 #        Arch / Manjaro / Alpine / Gentoo / 以及任意 systemd/OpenRC/SysV 发行版
 #  架构: x86_64(amd64) / aarch64(arm64) / armv7
 #
-#  在线安装(始终最新版):
-#    curl -fsSL https://raw.githubusercontent.com/ttbb1211/kunpanel/main/scripts/install.sh | bash
+#  在线安装(始终最新版;下载三源自动回退:CNB → GitCode → Gitee):
+#    第一步:下载本脚本到服务器(任选其一,保存为 kp-install.sh)
+#      CNB:   https://cnb.cool/kunge-nexa/kunpanel/-/git/raw/main/scripts/install.sh
+#      Gitee: https://gitee.com/NEXAB/kunpanel/raw/main/scripts/install.sh
+#    第二步:root 执行 bash kp-install.sh
+#    (完整一条命令见仓库 README)
 #  可选参数:
-#    bash install.sh --port 20000 --username admin --password yourpwd
+#    bash kp-install.sh --port 20000 --username admin --password yourpwd
 #                    --with-docker            同时安装 Docker 引擎
 #                    --mirror aliyun          Docker 使用阿里云镜像源
-#                    --proxy https://gh-proxy.com/   GitHub 下载加速
-#                    --version v2.46.4        指定版本(默认 latest 取最新)
+#                    --proxy <URL前缀>        cnb/gitee 下载加速前缀
+#                    --version v2.94.0        指定版本(默认 latest 取最新)
 #                    --offline /path/kunpanel.tar.gz   离线安装
 #                    --uninstall              卸载
 # ============================================================================
@@ -31,9 +35,9 @@ KP_OFFLINE=""
 KP_UNINSTALL=false
 KP_DIR="/opt/kunpanel"
 KP_SERVICE="kunpanel"
-# 发布源仓库：fork 后指向自己的仓库，安装与在线更新都从这里取包
-GH_REPO="ttbb1211/kunpanel"
-REPO_URL="https://github.com/${GH_REPO}/releases/download"
+CNB_BASE="https://cnb.cool/kunge-nexa/kunpanel"
+GC_API="https://gitcode.com/api/v5/repos/NEXAB/kunpanel"
+GITEE_OWNER="NEXAB"
 
 # ---------------- 参数解析 ----------------
 while [[ $# -gt 0 ]]; do
@@ -49,7 +53,7 @@ while [[ $# -gt 0 ]]; do
     --offline) KP_OFFLINE="$2"; shift 2 ;;
     --uninstall) KP_UNINSTALL=true; shift ;;
     -h|--help)
-      sed -n '2,20p' "$0"; exit 0 ;;
+      sed -n '2,26p' "$0"; exit 0 ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -83,7 +87,7 @@ if $KP_UNINSTALL; then
     /etc/init.d/$KP_SERVICE stop 2>/dev/null || true
     rm -f /etc/init.d/$KP_SERVICE
   fi
-  pkill -f "$KP_DIR/bin/kunpanel" 2>/dev/null || true
+  pkill -f "/opt/kunpanel/bin/kunpanel" 2>/dev/null || true
   echo -n "是否同时删除数据目录 $KP_DIR(网站/应用数据将丢失)?[y/N] "
   read -r ans
   if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
@@ -147,48 +151,92 @@ if ! command -v tar >/dev/null 2>&1 || ! command -v gzip >/dev/null 2>&1; then
   esac
 fi
 command -v tar >/dev/null 2>&1 || fail "tar 安装失败"
+# GitCode 源走 contents API(base64),需要 base64 命令(coreutils/busybox 均内置)
+command -v base64 >/dev/null 2>&1 || warn "缺少 base64 命令,GitCode 源将不可用(不影响其余两源)"
 
-# ---------------- 下载 ----------------
+# ---------------- 下载(三源依次回退:CNB → GitCode → Gitee) ----------------
 mkdir -p "$KP_DIR/bin" "$KP_DIR/data" "$KP_DIR/logs"
 TMP_TGZ=$(mktemp /tmp/kunpanel.XXXXXX.tar.gz)
+
+# resolve_tag <src>:获取最新版本号
+resolve_tag() {
+  case "$1" in
+    cnb)     curl -fsSL -m 15 -H "Accept: application/vnd.cnb.api+json" "$CNB_BASE/-/releases/latest" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 ;;
+    gitcode) curl -fsSL -m 15 "$GC_API/releases" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 ;;
+    gitee)   curl -fsSL -m 15 "https://gitee.com/$GITEE_OWNER/kunpanel/releases/latest" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 ;;
+  esac
+}
+
+# kp_gitcode_fetch <仓库内路径> <目标文件>:GitCode dist 分支文件
+# (≤950KB 整文件存放;更大的安装包切为 .partNNN 分块,此处逐块拼接)
+kp_gitcode_fetch() {
+  : > "$2"
+  local js i
+  js=$(curl -fsSL -m 60 "$GC_API/contents/$1?ref=dist" 2>/dev/null) && {
+    printf '%s' "$js" | grep -o '"content":"[^"]*"' | head -1 | cut -d'"' -f4 | tr -d '\n' | sed 's/\\n//g' | base64 -d >> "$2" 2>/dev/null
+    [[ -s "$2" ]] && return 0
+  }
+  for i in 000 001 002 003 004 005 006 007 008 009 010 011 012 013 014 015 016 017 018 019 020 021 022 023 024; do
+    js=$(curl -fsSL -m 60 "$GC_API/contents/$1.part$i?ref=dist" 2>/dev/null) || break
+    printf '%s' "$js" | grep -o '"content":"[^"]*"' | head -1 | cut -d'"' -f4 | tr -d '\n' | sed 's/\\n//g' | base64 -d >> "$2" 2>/dev/null || return 1
+  done
+  [[ -s "$2" ]]
+}
+
+# download_asset <src> <tag> <资产名> <目标文件>
+download_asset() {
+  case "$1" in
+    cnb)     curl -fSL --connect-timeout 15 --retry 2 -o "$4" "${KP_PROXY}$CNB_BASE/-/releases/download/$2/$3" ;;
+    gitee)   curl -fSL --connect-timeout 15 --retry 2 -o "$4" "${KP_PROXY}https://gitee.com/$GITEE_OWNER/kunpanel/releases/download/$2/$3" ;;
+    gitcode) kp_gitcode_fetch "dist/assets/$2/$3" "$4" ;;
+  esac
+}
 
 if [[ -n "$KP_OFFLINE" ]]; then
   [[ -f "$KP_OFFLINE" ]] || fail "离线包不存在: $KP_OFFLINE"
   info "使用离线包: $KP_OFFLINE"
   cp "$KP_OFFLINE" "$TMP_TGZ"
+  TAG="$KP_VERSION"; SRC="offline"
 else
-  # latest = 直接取最新 release 的无版本产物;指定版本则用带版本产物
+  # 解析版本号 + 主源
   if [[ "$KP_VERSION" == "latest" ]]; then
-    DL_URL="https://github.com/${GH_REPO}/releases/latest/download/kunpanel_linux_${ARCH}.tar.gz"
+    TAG=""; SRC=""
+    for s in cnb gitcode gitee; do
+      TAG=$(resolve_tag "$s")
+      if [[ -n "$TAG" ]]; then SRC="$s"; break; fi
+    done
+    [[ -z "$TAG" ]] && fail "三个更新源(CNB/GitCode/Gitee)均无法获取最新版本,请检查服务器网络"
+    info "最新版本 $TAG(检测来源: $SRC)"
   else
-    DL_URL="$REPO_URL/$KP_VERSION/kunpanel_${KP_VERSION}_linux_${ARCH}.tar.gz"
+    TAG="$KP_VERSION"; SRC="cnb"
   fi
-  if [[ -n "$KP_PROXY" ]]; then
-    DL_URL="${KP_PROXY}${DL_URL}"
-  fi
-  info "下载坤面板 $KP_VERSION (linux_${ARCH}) ..."
-  info "地址: $DL_URL"
-  curl -fSL --connect-timeout 15 --retry 3 -o "$TMP_TGZ" "$DL_URL" || fail "下载失败,请检查网络或使用 --proxy 加速"
-  # SHA-256 校验(供应链完整性;--no-verify 或离线模式跳过)
+  ASSET="kunpanel_${TAG}_linux_${ARCH}.tar.gz"
+
+  # 依次回退下载
+  DOWNLOADED=0
+  for s in $SRC cnb gitcode gitee; do
+    info "更新源 $s:下载 $ASSET ..."
+    if download_asset "$s" "$TAG" "$ASSET" "$TMP_TGZ" && [[ "$(wc -c < "$TMP_TGZ")" -gt 1000000 ]]; then
+      DOWNLOADED=1; DL_SRC="$s"; ok "下载成功(来源 $s)"
+      break
+    fi
+    warn "源 $s 下载失败,切换下一源"
+    : > "$TMP_TGZ"
+  done
+  [[ $DOWNLOADED == 1 ]] || fail "三个更新源均下载失败,请检查网络或使用 --offline 离线安装"
+
+  # SHA-256 校验(供应链完整性;与下载同源,--no-verify 可跳过)
   if [[ "${KP_NO_VERIFY:-}" != "1" ]]; then
-    SUM_URL="${DL_URL%/*}/SHA256SUMS"
-    [[ "$SUM_URL" == *"/latest/download/"* ]] && SUM_URL="https://github.com/${GH_REPO}/releases/latest/download/SHA256SUMS"
     TMP_SUM=$(mktemp)
-    SUM_SRC="${KP_PROXY:+$KP_PROXY}$SUM_URL"
-    if curl -fsSL --connect-timeout 15 --retry 2 -o "$TMP_SUM" "$SUM_SRC"; then
-      # 兼容 "./name" 与 "name" 两种行格式(构建脚本生成的是 ./ 前缀)
-      EXPECT=$(grep -E " [*.]?\.?/?kunpanel_linux_${ARCH}\.tar\.gz$" "$TMP_SUM" | awk '{print $1}' | head -1)
+    if download_asset "$DL_SRC" "$TAG" "SHA256SUMS" "$TMP_SUM" && [[ -s "$TMP_SUM" ]]; then
+      EXPECT=$(grep -E " [*.]?\.?/?$ASSET\$" "$TMP_SUM" | awk '{print $1}' | head -1)
       ACTUAL=$(sha256sum "$TMP_TGZ" | awk '{print $1}')
-      if [[ -z "$EXPECT" ]]; then rm -f "$TMP_SUM"; fail "校验和中没有 kunpanel_linux_${ARCH}.tar.gz 的记录,已中止安装(供应链校验不可跳过;如确需强制安装请 --no-verify)"
+      if [[ -z "$EXPECT" ]]; then rm -f "$TMP_SUM"; fail "校验和中没有 $ASSET 的记录,已中止安装(供应链校验不可跳过;如确需强制安装请 --no-verify)"
       elif [[ "$EXPECT" != "$ACTUAL" ]]; then rm -f "$TMP_SUM"; fail "SHA-256 校验失败,安装包可能被篡改"
       else ok "SHA-256 校验通过"; fi
     else
       rm -f "$TMP_SUM"
-      if [[ -z "$KP_PROXY" ]]; then
-        fail "下载 SHA256SUMS 失败,已中止安装(供应链校验不可跳过;如确需强制安装请 --no-verify)"
-      else
-        fail "经代理下载 SHA256SUMS 失败,已中止安装;可尝试 --no-verify(不推荐)或去掉 --proxy 直连"
-      fi
+      fail "下载 SHA256SUMS 失败,已中止安装(供应链校验不可跳过;如确需强制安装请 --no-verify)"
     fi
   fi
 fi
@@ -199,8 +247,6 @@ chmod +x "$KP_DIR/bin/kunpanel"
 rm -f "$TMP_TGZ"
 
 # ---------------- 初始化配置(端口/账号) ----------------
-ENV_LINE=""
-if [[ -n "$KP_PORT" ]]; then ENV_LINE="KP_PORT=$KP_PORT"; fi
 # 首次运行生成配置(随机端口/随机入口/随机密码,可被参数覆盖)
 if [[ ! -f "$KP_DIR/data/config.json" ]]; then
   FIRST_ENV=()
@@ -291,11 +337,11 @@ case "\$1" in
   stop)
     echo -n "Stopping KunPanel ... "
     if [ -f \$PIDFILE ]; then kill \$(cat \$PIDFILE) 2>/dev/null; rm -f \$PIDFILE; fi
-    pkill -f "\$DAEMON" 2>/dev/null
+    pkill -f "/opt/kunpanel/bin/kunpanel" 2>/dev/null
     echo "OK" ;;
   restart) \$0 stop; sleep 1; \$0 start ;;
   status)
-    if pgrep -f "\$DAEMON" >/dev/null; then echo "KunPanel is running"; else echo "KunPanel is stopped"; fi ;;
+    if pgrep -f "/opt/kunpanel/bin/kunpanel" >/dev/null; then echo "KunPanel is running"; else echo "KunPanel is stopped"; fi ;;
   *) echo "Usage: \$0 {start|stop|restart|status}" ;;
 esac
 EOF
@@ -341,6 +387,19 @@ if [[ -n "$PORT_HINT" ]]; then
   elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     firewall-cmd --permanent --add-port="$PORT_HINT/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 && info "已放行 firewalld 端口 $PORT_HINT"
   fi
+  # 裸 iptables(Oracle 等平台镜像只放行 22 且无 ufw/firewalld):把面板端口插到 INPUT 最前并持久化
+  if command -v iptables >/dev/null 2>&1 && ! command -v ufw >/dev/null 2>&1 && ! command -v firewall-cmd >/dev/null 2>&1; then
+    if iptables -S INPUT 2>/dev/null | grep -qE "\-(REJECT|DROP)$"; then
+      iptables -C INPUT -p tcp --dport "$PORT_HINT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport "$PORT_HINT" -j ACCEPT
+      if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1 || true
+      else
+        mkdir -p /etc/iptables 2>/dev/null || true
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
+      fi
+      info "已放行裸 iptables 端口 $PORT_HINT"
+    fi
+  fi
 else
   warn "未能自动检测面板端口(面板可能尚未完成初始化),请从上方面板地址查看端口并手动放行防火墙"
 fi
@@ -351,11 +410,17 @@ if $KP_WITH_DOCKER; then
     ok "Docker 已安装,跳过"
   else
     info "一键安装 Docker 引擎 ..."
-    if [[ "$KP_DOCKER_MIRROR" == "aliyun" ]]; then
-      curl -fsSL https://get.docker.com | sh -s -- --mirror Aliyun || warn "Docker 安装失败,可稍后在面板【容器】页重试"
+    DOCKER_SH=$(mktemp /tmp/kp-docker.XXXXXX.sh)
+    if curl -fsSL https://get.docker.com -o "$DOCKER_SH"; then
+      if [[ "$KP_DOCKER_MIRROR" == "aliyun" ]]; then
+        sh "$DOCKER_SH" --mirror Aliyun || warn "Docker 安装失败,可稍后在面板【容器】页重试"
+      else
+        sh "$DOCKER_SH" || warn "Docker 安装失败,可稍后在面板【容器】页重试"
+      fi
     else
-      curl -fsSL https://get.docker.com | sh || warn "Docker 安装失败,可稍后在面板【容器】页重试"
+      warn "Docker 官方脚本下载失败,可稍后在面板【容器】页重试"
     fi
+    rm -f "$DOCKER_SH"
     if have_systemd; then systemctl enable --now docker 2>/dev/null || true
     elif have_openrc; then rc-update add docker boot 2>/dev/null || true; rc-service docker start 2>/dev/null || true
     fi
@@ -413,7 +478,7 @@ fi
 
 echo
 REAL_VER=$("$KP_DIR/bin/kunpanel" --version 2>/dev/null | awk '{print $2}')
-[[ -z "$REAL_VER" ]] && REAL_VER="$KP_VERSION"
+[[ -z "$REAL_VER" ]] && REAL_VER="$TAG"
 echo "=============================================================="
 echo -e "  ${GREEN}坤面板 KunPanel $REAL_VER 安装完成!${NC}"
 echo "=============================================================="

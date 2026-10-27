@@ -7,10 +7,10 @@
 package fwmgmt
 
 import (
-	"regexp"
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -107,7 +107,7 @@ func DockerPorts() DockerFW {
 			if !strings.Contains(seg, "->") {
 				continue
 			}
-			hostPart := strings.SplitN(seg, "->", 2)[0]      // 0.0.0.0:3306 或 [::]:3306
+			hostPart := strings.SplitN(seg, "->", 2)[0] // 0.0.0.0:3306 或 [::]:3306
 			hp := hostPart
 			if i := strings.LastIndex(hp, ":"); i >= 0 {
 				hp = hp[i+1:]
@@ -255,7 +255,7 @@ func DockerReapply() {
 
 // ---------- ping (ICMP) 开关 ----------
 
-func pingSysctl() string   { return "/etc/sysctl.d/99-kunpanel.conf" }
+func pingSysctl() string { return "/etc/sysctl.d/99-kunpanel.conf" }
 
 // PingStatus 当前是否允许 ping(true=允许)
 func PingStatus() bool {

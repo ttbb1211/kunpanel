@@ -302,6 +302,14 @@ func (s *Server) registerAPI() {
 	m.Handle("POST /api/v1/uptime/monitors/{id}/toggle", wrap(http.HandlerFunc(s.handleUpmonToggle)))
 	m.Handle("DELETE /api/v1/uptime/monitors/{id}", wrap(http.HandlerFunc(s.handleUpmonDelete)))
 
+	// 节点管理(多机监控)
+	m.Handle("GET /api/v1/nodes", wrap(http.HandlerFunc(s.handleNodeList)))
+	m.Handle("POST /api/v1/nodes", wrap(http.HandlerFunc(s.handleNodeAdd)))
+	m.Handle("PUT /api/v1/nodes/{id}", wrap(http.HandlerFunc(s.handleNodeUpdate)))
+	m.Handle("DELETE /api/v1/nodes/{id}", wrap(http.HandlerFunc(s.handleNodeDelete)))
+	m.Handle("POST /api/v1/nodes/check", wrap(http.HandlerFunc(s.handleNodeCheck)))
+	m.Handle("POST /api/v1/nodes/{id}/{action}", wrap(http.HandlerFunc(s.handleNodeAction)))
+
 	// 网络工具箱
 	m.Handle("POST /api/v1/nettools/ping", wrap(http.HandlerFunc(s.handleNetPing)))
 	m.Handle("POST /api/v1/nettools/trace", wrap(http.HandlerFunc(s.handleNetTrace)))
