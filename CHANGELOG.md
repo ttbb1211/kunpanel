@@ -3,7 +3,17 @@
 所有重要变更都会记录在此文件中。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [v2.96.4] - 2026-10-27
+
+## [v2.96.5] - 2026-10-27
+
+### 修复:坤发卡源码包改从 CNB 下载（v2.96.4 的 gitee 地址不可用）
+
+v2.96.4 用 `gitee.com/NEXAB/kunfaka/repository/archive/main.tar.gz` 下载源码包,实测
+gitee 对该地址做了 UA 反爬:Go 默认 UA、浏览器 UA 都返回 HTML 页面,
+解压时报 `not in gzip format`。改从 CNB `kunge-nexa/kunfaka/-/git/archive/main.tar.gz`
+下载（对 API 调用稳定返回 tar,实测 7.9MB）。其余同 v2.96.4。
+
+## [v2.96.4] - 2026-10-27（已废弃，见 v2.96.5）
 
 ### 修复:应用商店 4 个失效应用（作者撤出 GitHub 后遗症）
 
@@ -11,7 +21,7 @@
 按"能救则救、救不了下架"处理:
 
 - **坤支付**:`build` 源由 `github.com/kungec/kunpay.git` 改为 `gitee.com/NEXAB/kunpay.git`
-- **坤发卡**:改为源码构建 —— 安装时从 `gitee.com/NEXAB/kunfaka` 下载源码包解压到 `./src`,
+- **坤发卡**:改为源码构建 —— 安装时从 CNB `kunge-nexa/kunfaka` 下载源码包解压到 `./src`,
   compose 用 `build: ./src`（上游自 v2.96 起不再发布 Docker Hub 预构建镜像）;
   同时去掉 `database.sql` 下载与挂载（新版首次访问走 `install.php` 安装向导）
 - **坤影CMS / NAT Cloud**:作者新账号下无对应仓库,从应用商店移除

@@ -2,7 +2,7 @@
 
 > # 📌 本仓库说明 · ttbb1211 定制构建
 >
-> 基于上游 **坤面板 v2.96.2** 的个人定制版。版本号在上游基础上**递增 patch**（本仓库发版取「上游最新 / 本仓库最新」较大者 +1，当前 v2.96.4），产物额外含下列 7 处改动。
+> 基于上游 **坤面板 v2.96.2** 的个人定制版。版本号在上游基础上**递增 patch**（本仓库发版取「上游最新 / 本仓库最新」较大者 +1，当前 v2.96.5），产物额外含下列 7 处改动。
 >
 > ## 相对上游的改动（仅此 7 处）
 >
@@ -38,7 +38,7 @@
 >
 > ```bash
 > CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
->   -ldflags "-s -w -X main.version=v2.96.4" -o kunpanel .
+>   -ldflags "-s -w -X main.version=v2.96.5" -o kunpanel .
 > ```
 >
 > 推 `v*` 标签会触发 `.github/workflows/release.yml` 自动出全套安装包并建 Release，

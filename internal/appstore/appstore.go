@@ -1018,8 +1018,12 @@ func Install(key string, params map[string]string) (string, error) {
 // installKunfaka 下载坤发卡源码包并解压到 ./src(compose 里 build: ./src)。
 // 上游自 v2.96 起不再发布 Docker Hub 预构建镜像,也不再提供 database.sql
 // (首次访问走 install.php 安装向导,库表由向导自动创建)。
+//
+// ⚠️ 源码包必须从 CNB 取:gitee 的 /repository/archive/main.tar.gz 会对
+// 非 curl/wget 的 UA 返回 HTML 反爬页(Go 默认 UA、浏览器 UA 都中招),
+// 解压时报 "not in gzip format"。CNB 的 /-/git/archive/ 对 API 调用稳定返回 tar。
 func installKunfaka(dir string, params map[string]string) error {
-	tarURL := "https://gitee.com/NEXAB/kunfaka/repository/archive/main.tar.gz"
+	tarURL := "https://cnb.cool/kunge-nexa/kunfaka/-/git/archive/main.tar.gz"
 	data, err := downloadFile(tarURL, 120*time.Second)
 	if err != nil {
 		return fmt.Errorf("下载源码包失败: %w", err)
