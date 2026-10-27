@@ -72,13 +72,21 @@ func Run(o Options) error {
 	// 插件系统(注入网站模块 WAF 钩子)
 	plugins.Init()
 
-	// 升级后把全部站点配置迁移到当前格式(如新增的 ACME 挑战 location)
+	// 升级后把全部站点配置迁移到当前格式(如新增的 ACME 挑战 location)。
+	// 只在「站点配置模板版本」提升时执行一次:否则每次重启都会用模板覆盖用户对
+	// site_*.conf 的手工调整(例如给某个站点单独调大 proxy_read_timeout)。
 	go func() {
 		defer recoverPanic("site-conf-migrate")
 		time.Sleep(10 * time.Second)
+		if !websites.NeedConfMigration() {
+			return
+		}
 		if err := websites.RewriteAllConfs(); err != nil {
 			log.Printf("站点配置迁移失败: %v", err)
+			return
 		}
+		websites.MarkConfMigrated()
+		log.Printf("站点配置已迁移到模板版本 %d", websites.ConfSchemaVersion())
 	}()
 
 	// 监控告警循环

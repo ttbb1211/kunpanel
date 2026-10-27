@@ -3,6 +3,20 @@
 所有重要变更都会记录在此文件中。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v2.96.3] - 2026-10-27
+
+### 修复:一键更新取错源、重启覆盖站点配置(定制 fork 专用)
+
+- **一键更新只认本仓库** `ttbb1211/kunpanel` 的 GitHub Releases;上游 CNB / GitCode / Gitee
+  三源降级为 `upstreamSources`,仅供人工对照版本,不参与检查与安装
+  （上游 v2.96.2 把更新源全改成上游平台,点一键更新会用官方原版覆盖定制改动）
+- **恢复站点配置模板版本号机制**（`.conf-schema` + `confSchemaVersion=5`）:
+  上游改回「每次启动 10 秒后无条件重写全部 `site_*.conf`」,会让手工调过的站点配置
+  在下次重启时丢失
+- **恢复 `KP_PROXY_READ_TIMEOUT` 环境变量覆盖**（默认仍为 3600s,行为不变）
+- `scripts/install.sh` 取包源改回本仓库 GitHub Releases,移除 GitCode base64 分块下载逻辑
+- 删除误提交的 `.video_agent/plugin_root`（上游作者本地路径残留）
+
 ## [v2.96.2] - 2026-10-21
 
 ### 优化:消除概览下方空白(用户反馈"旁边空着一块")

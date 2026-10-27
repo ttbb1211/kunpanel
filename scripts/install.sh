@@ -5,18 +5,15 @@
 #        Arch / Manjaro / Alpine / Gentoo / 以及任意 systemd/OpenRC/SysV 发行版
 #  架构: x86_64(amd64) / aarch64(arm64) / armv7
 #
-#  在线安装(始终最新版;下载三源自动回退:CNB → GitCode → Gitee):
-#    第一步:下载本脚本到服务器(任选其一,保存为 kp-install.sh)
-#      CNB:   https://cnb.cool/kunge-nexa/kunpanel/-/git/raw/main/scripts/install.sh
-#      Gitee: https://gitee.com/NEXAB/kunpanel/raw/main/scripts/install.sh
-#    第二步:root 执行 bash kp-install.sh
-#    (完整一条命令见仓库 README)
+#  在线安装(始终最新版;安装包只从本仓库 GitHub Releases 取):
+#    curl -fsSL https://raw.githubusercontent.com/ttbb1211/kunpanel/main/scripts/install.sh | bash
+#  ⚠️ 本仓库是定制 fork,不取上游(CNB/GitCode/Gitee)的包——那会覆盖定制改动
 #  可选参数:
-#    bash kp-install.sh --port 20000 --username admin --password yourpwd
+#    bash install.sh --port 20000 --username admin --password yourpwd
 #                    --with-docker            同时安装 Docker 引擎
 #                    --mirror aliyun          Docker 使用阿里云镜像源
-#                    --proxy <URL前缀>        cnb/gitee 下载加速前缀
-#                    --version v2.94.0        指定版本(默认 latest 取最新)
+#                    --proxy <URL前缀>        GitHub 下载加速前缀
+#                    --version v2.96.3        指定版本(默认 latest 取最新)
 #                    --offline /path/kunpanel.tar.gz   离线安装
 #                    --uninstall              卸载
 # ============================================================================
@@ -35,9 +32,10 @@ KP_OFFLINE=""
 KP_UNINSTALL=false
 KP_DIR="/opt/kunpanel"
 KP_SERVICE="kunpanel"
-CNB_BASE="https://cnb.cool/kunge-nexa/kunpanel"
-GC_API="https://gitcode.com/api/v5/repos/NEXAB/kunpanel"
-GITEE_OWNER="NEXAB"
+# 发布源仓库:本仓库。安装与在线更新都从这里取包
+GH_REPO="ttbb1211/kunpanel"
+GH_API="https://api.github.com/repos/${GH_REPO}"
+GH_DL="https://github.com/${GH_REPO}/releases/download"
 
 # ---------------- 参数解析 ----------------
 while [[ $# -gt 0 ]]; do
@@ -151,45 +149,21 @@ if ! command -v tar >/dev/null 2>&1 || ! command -v gzip >/dev/null 2>&1; then
   esac
 fi
 command -v tar >/dev/null 2>&1 || fail "tar 安装失败"
-# GitCode 源走 contents API(base64),需要 base64 命令(coreutils/busybox 均内置)
-command -v base64 >/dev/null 2>&1 || warn "缺少 base64 命令,GitCode 源将不可用(不影响其余两源)"
 
-# ---------------- 下载(三源依次回退:CNB → GitCode → Gitee) ----------------
+# ---------------- 下载(只从本仓库 GitHub Releases 取) ----------------
 mkdir -p "$KP_DIR/bin" "$KP_DIR/data" "$KP_DIR/logs"
 TMP_TGZ=$(mktemp /tmp/kunpanel.XXXXXX.tar.gz)
 
-# resolve_tag <src>:获取最新版本号
+# resolve_tag:获取本仓库最新版本号
 resolve_tag() {
-  case "$1" in
-    cnb)     curl -fsSL -m 15 -H "Accept: application/vnd.cnb.api+json" "$CNB_BASE/-/releases/latest" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 ;;
-    gitcode) curl -fsSL -m 15 "$GC_API/releases" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 ;;
-    gitee)   curl -fsSL -m 15 "https://gitee.com/$GITEE_OWNER/kunpanel/releases/latest" 2>/dev/null | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 ;;
-  esac
+  curl -fsSL -m 15 -H "Accept: application/vnd.github+json" \
+    "$GH_API/releases/latest" 2>/dev/null \
+    | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4
 }
 
-# kp_gitcode_fetch <仓库内路径> <目标文件>:GitCode dist 分支文件
-# (≤950KB 整文件存放;更大的安装包切为 .partNNN 分块,此处逐块拼接)
-kp_gitcode_fetch() {
-  : > "$2"
-  local js i
-  js=$(curl -fsSL -m 60 "$GC_API/contents/$1?ref=dist" 2>/dev/null) && {
-    printf '%s' "$js" | grep -o '"content":"[^"]*"' | head -1 | cut -d'"' -f4 | tr -d '\n' | sed 's/\\n//g' | base64 -d >> "$2" 2>/dev/null
-    [[ -s "$2" ]] && return 0
-  }
-  for i in 000 001 002 003 004 005 006 007 008 009 010 011 012 013 014 015 016 017 018 019 020 021 022 023 024; do
-    js=$(curl -fsSL -m 60 "$GC_API/contents/$1.part$i?ref=dist" 2>/dev/null) || break
-    printf '%s' "$js" | grep -o '"content":"[^"]*"' | head -1 | cut -d'"' -f4 | tr -d '\n' | sed 's/\\n//g' | base64 -d >> "$2" 2>/dev/null || return 1
-  done
-  [[ -s "$2" ]]
-}
-
-# download_asset <src> <tag> <资产名> <目标文件>
+# download_asset <tag> <资产名> <目标文件>
 download_asset() {
-  case "$1" in
-    cnb)     curl -fSL --connect-timeout 15 --retry 2 -o "$4" "${KP_PROXY}$CNB_BASE/-/releases/download/$2/$3" ;;
-    gitee)   curl -fSL --connect-timeout 15 --retry 2 -o "$4" "${KP_PROXY}https://gitee.com/$GITEE_OWNER/kunpanel/releases/download/$2/$3" ;;
-    gitcode) kp_gitcode_fetch "dist/assets/$2/$3" "$4" ;;
-  esac
+  curl -fSL --connect-timeout 15 --retry 2 -o "$3" "${KP_PROXY}${GH_DL}/$1/$2"
 }
 
 if [[ -n "$KP_OFFLINE" ]]; then
@@ -198,37 +172,29 @@ if [[ -n "$KP_OFFLINE" ]]; then
   cp "$KP_OFFLINE" "$TMP_TGZ"
   TAG="$KP_VERSION"; SRC="offline"
 else
-  # 解析版本号 + 主源
+  # 解析版本号
   if [[ "$KP_VERSION" == "latest" ]]; then
-    TAG=""; SRC=""
-    for s in cnb gitcode gitee; do
-      TAG=$(resolve_tag "$s")
-      if [[ -n "$TAG" ]]; then SRC="$s"; break; fi
-    done
-    [[ -z "$TAG" ]] && fail "三个更新源(CNB/GitCode/Gitee)均无法获取最新版本,请检查服务器网络"
-    info "最新版本 $TAG(检测来源: $SRC)"
+    TAG=$(resolve_tag)
+    [[ -z "$TAG" ]] && fail "无法从 GitHub(${GH_REPO})获取最新版本,请检查服务器网络或改用 --version 指定版本"
+    info "最新版本 $TAG"
   else
-    TAG="$KP_VERSION"; SRC="cnb"
+    TAG="$KP_VERSION"
   fi
   ASSET="kunpanel_${TAG}_linux_${ARCH}.tar.gz"
 
-  # 依次回退下载
-  DOWNLOADED=0
-  for s in $SRC cnb gitcode gitee; do
-    info "更新源 $s:下载 $ASSET ..."
-    if download_asset "$s" "$TAG" "$ASSET" "$TMP_TGZ" && [[ "$(wc -c < "$TMP_TGZ")" -gt 1000000 ]]; then
-      DOWNLOADED=1; DL_SRC="$s"; ok "下载成功(来源 $s)"
-      break
-    fi
-    warn "源 $s 下载失败,切换下一源"
+  # 下载(单源,失败即报错,不做静默回退到上游)
+  info "下载 $ASSET ..."
+  if download_asset "$TAG" "$ASSET" "$TMP_TGZ" && [[ "$(wc -c < "$TMP_TGZ")" -gt 1000000 ]]; then
+    ok "下载成功"
+  else
     : > "$TMP_TGZ"
-  done
-  [[ $DOWNLOADED == 1 ]] || fail "三个更新源均下载失败,请检查网络或使用 --offline 离线安装"
+    fail "从 GitHub(${GH_REPO}) 下载 $ASSET 失败,请检查网络或使用 --offline 离线安装"
+  fi
 
-  # SHA-256 校验(供应链完整性;与下载同源,--no-verify 可跳过)
+  # SHA-256 校验(供应链完整性;--no-verify 可跳过)
   if [[ "${KP_NO_VERIFY:-}" != "1" ]]; then
     TMP_SUM=$(mktemp)
-    if download_asset "$DL_SRC" "$TAG" "SHA256SUMS" "$TMP_SUM" && [[ -s "$TMP_SUM" ]]; then
+    if download_asset "$TAG" "SHA256SUMS" "$TMP_SUM" && [[ -s "$TMP_SUM" ]]; then
       EXPECT=$(grep -E " [*.]?\.?/?$ASSET\$" "$TMP_SUM" | awk '{print $1}' | head -1)
       ACTUAL=$(sha256sum "$TMP_TGZ" | awk '{print $1}')
       if [[ -z "$EXPECT" ]]; then rm -f "$TMP_SUM"; fail "校验和中没有 $ASSET 的记录,已中止安装(供应链校验不可跳过;如确需强制安装请 --no-verify)"

@@ -1,5 +1,8 @@
-// 面板在线更新:多源检查与下载(CNB → GitCode → Gitee 依次回退)。
-// 任一源可用即完成检查/下载;来源见 README 与 release 说明。
+// 面板在线更新:只从本仓库(ttbb1211/kunpanel)的 GitHub Releases 检查与下载。
+//
+// 本仓库是定制 fork:一键更新绝不能取上游包,否则会用官方原版覆盖 README 顶部
+// 列出的 4 处定制(2026-10-27 定)。上游三源(CNB/GitCode/Gitee)的实现保留在
+// upstreamSources 里,仅供人工对照上游版本,不参与检查与安装。
 package panelupdate
 
 import (
@@ -20,8 +23,12 @@ import (
 	"kunpanel/internal/notifyx"
 )
 
-// 三个发布平台的匿名直链
+// 本仓库(唯一安装源)与上游三个发布平台的匿名直链
 const (
+	// githubRepo 本仓库:面板的检查与一键更新只认这里
+	githubRepo = "ttbb1211/kunpanel"
+
+	// 以下三项仅用于人工对照上游版本(见 upstreamSources),不参与安装
 	cnbRepo        = "cnb.cool/kunge-nexa/kunpanel"
 	gitcodeAPI     = "https://gitcode.com/api/v5/repos/NEXAB/kunpanel"
 	gitcodeDistRef = "dist" // GitCode 附件走 dist 分支的仓库内文件(整文件或 .partNNN 分块)
@@ -97,7 +104,31 @@ type release struct {
 	PublishedAt string `json:"published_at"`
 }
 
-// ---------- 三个更新源 ----------
+// ---------- 本仓库(GitHub):唯一的检查与安装源 ----------
+
+// githubLatest 本仓库最新 Release。匿名调用 api.github.com 限 60 次/小时,
+// 面板每 5 分钟 + 每 6 小时各查一次(约 13 次/小时),留有余量。
+func githubLatest() (*release, error) {
+	s, err := httpGetString("https://api.github.com/repos/"+githubRepo+"/releases/latest", 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	var r release
+	if err := json.Unmarshal([]byte(s), &r); err != nil {
+		return nil, fmt.Errorf("解析 Release 失败: %v", err)
+	}
+	if r.TagName == "" {
+		return nil, fmt.Errorf("无 tag_name")
+	}
+	return &r, nil
+}
+
+// githubAssetURL Release 资产直链(会 302 到 objects.githubusercontent.com)
+func githubAssetURL(tag, asset string) string {
+	return "https://github.com/" + githubRepo + "/releases/download/" + tag + "/" + asset
+}
+
+// ---------- 上游三源(仅人工对照版本用,不参与检查与安装) ----------
 
 // cnbLatest CNB 最新版本(匿名,Accept 需带 vnd.cnb.api+json)
 func cnbLatest() (*release, error) {
@@ -235,7 +266,25 @@ type updateSource struct {
 	download func(tag, asset, dst string, w io.Writer) error // 安装包下载
 }
 
+// sources 一键更新实际使用的源:只有本仓库。
+// ⚠️ 别把 upstreamSources 里的项加进来 —— 那会让一键更新装上官方原版,
+// 覆盖 README 顶部的 4 处定制。要对照上游版本请用 upstreamSources 单独查。
 var sources = []updateSource{
+	{
+		name:   "GitHub",
+		latest: githubLatest,
+		sums: func(tag string) (string, error) {
+			return httpGetString(githubAssetURL(tag, "SHA256SUMS"), 1<<20)
+		},
+		download: func(tag, asset, dst string, w io.Writer) error {
+			return downloadFile(githubAssetURL(tag, asset), dst, w)
+		},
+	},
+}
+
+// upstreamSources 上游三源(CNB → GitCode → Gitee)。默认不参与任何流程,
+// 仅供排障时人工对照上游是否已出新版。加进 sources 之前先想清楚后果。
+var upstreamSources = []updateSource{
 	{
 		name:   "CNB",
 		latest: cnbLatest,
@@ -274,7 +323,7 @@ var sources = []updateSource{
 
 // ---------- 检查 ----------
 
-// Check 依次尝试三个更新源,第一个成功者生效
+// Check 依次尝试各更新源(当前只有本仓库 GitHub),第一个成功者生效
 func Check() (*Info, error) {
 	var lastErr error
 	for _, src := range sources {
@@ -298,7 +347,7 @@ func Check() (*Info, error) {
 		mu.Unlock()
 		return info, nil
 	}
-	return nil, fmt.Errorf("三个更新源(CNB/GitCode/Gitee)均不可达: %v", lastErr)
+	return nil, fmt.Errorf("更新源(%s)不可达: %v", githubRepo, lastErr)
 }
 
 // Cached 上次检查结果(可能为 nil)

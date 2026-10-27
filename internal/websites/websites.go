@@ -189,6 +189,41 @@ func wafOn() bool {
 	return WafEnabled != nil && WafEnabled()
 }
 
+// confSchemaVersion 站点配置模板版本号。
+// 只要 writeConf 生成的 conf 结构发生变化(新增/调整指令、新增 location 等),就把它 +1;
+// 面板启动时据此判断是否要把存量站点 conf 重新生成一遍。
+// 注意:不要无条件重建 —— 那会在每次重启时覆盖用户对站点 conf 的手工调整。
+//
+// 版本历史:1 → 2(ACME 挑战 location) → 3(v2.84.4 读超时可配置) → 4(v2.84.6
+// 模板补 X-Forwarded-Host/Port) → 5(2026-10-27 重新加回本机制,存量 conf 与
+// 模板输出等价,只为把 .conf-schema 拉到当前版本)。
+const confSchemaVersion = 5
+
+// ConfSchemaVersion 当前站点配置模板版本(供日志与排查)
+func ConfSchemaVersion() int { return confSchemaVersion }
+
+// confSchemaFile 记录已迁移到的模板版本
+func confSchemaFile() string { return filepath.Join(baseDir(), ".conf-schema") }
+
+// NeedConfMigration 是否需要把存量站点配置迁移到当前模板版本。
+// 老版本没有该文件 => 迁移一次;之后只有版本号提升才会再迁移。
+func NeedConfMigration() bool {
+	b, err := os.ReadFile(confSchemaFile())
+	if err != nil {
+		return true
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return true
+	}
+	return n < confSchemaVersion
+}
+
+// MarkConfMigrated 记录已完成迁移,后续重启不再全量重写站点配置
+func MarkConfMigrated() {
+	_ = util.AtomicWrite(confSchemaFile(), []byte(strconv.Itoa(confSchemaVersion)), 0o600)
+}
+
 // RewriteAllConfs 按当前状态重新生成全部已启用站点配置并重载(WAF 启停时调用)
 func RewriteAllConfs() error {
 	mu.Lock()
@@ -1086,7 +1121,7 @@ func writeConf(s *Site) error {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_read_timeout 3600s;
+        proxy_read_timeout ` + proxyReadTimeout() + `;
     }
 `)
 		}
@@ -1654,4 +1689,15 @@ func AppendRemark(id, extra string) error {
 	err := save()
 	mu.Unlock()
 	return err
+}
+
+// proxyReadTimeout 反代读超时。默认 3600s（v2.84.4 起；上游硬编码 300s 会让 SSE
+// 长连接与长任务在 5 分钟空闲后断开——http 级 00-global-override.conf 里的
+// proxy_read_timeout 3600s 会被 location 内的显式指令覆盖，故必须在此处给足）。
+// 环境变量 KP_PROXY_READ_TIMEOUT 可覆盖（如 "7200s"）。
+func proxyReadTimeout() string {
+	if v := strings.TrimSpace(os.Getenv("KP_PROXY_READ_TIMEOUT")); v != "" {
+		return v
+	}
+	return "3600s"
 }

@@ -2,9 +2,9 @@
 
 > # 📌 本仓库说明 · ttbb1211 定制构建
 >
-> 基于上游 **坤面板 v2.96.2** 的个人定制版。**版本号与上游保持一致**——同一版本号下，本仓库的产物额外含下列 4 处改动。
+> 基于上游 **坤面板 v2.96.2** 的个人定制版。版本号在上游基础上**递增 patch**（本仓库发版取「上游最新 / 本仓库最新」较大者 +1，当前 v2.96.3），产物额外含下列 6 处改动。
 >
-> ## 相对上游的改动（仅此 4 处）
+> ## 相对上游的改动（仅此 6 处）
 >
 > | # | 改动 | 涉及文件 | 原因 |
 > |---|---|---|---|
@@ -12,6 +12,8 @@
 > | 2 | 反代模板补 `X-Forwarded-Host` / `X-Forwarded-Port` | 同上 | 上游只透传 `X-Forwarded-For/Proto`，后端取不到真实域名与端口 |
 > | 3 | 站点列表窄屏适配：列宽收窄 + `≤1499 / 1359 / 1199px` 逐级隐藏「创建时间 / 端口 / HTTPS」 | `web/static/pages.js`<br>`web/static/app.css`<br>`web/static/ui.js` | 9 列合计 1426px，1366 屏压到 76%、1280 屏 70%，全表文字截断；域名列曾被压成 0 宽 |
 > | 4 | 退出重登后脏 hash 回落概览 | `web/static/app.js` | 停在 `#/login` 会让顶栏监控与概览页定时器双倍轮询，页面卡在骨架屏 |
+> | 5 | **一键更新只认本仓库**：`sources` 只留 GitHub，上游三源降为 `upstreamSources`（仅人工对照，不参与安装） | `internal/panelupdate/sources.go`<br>`scripts/install.sh` | 上游 v2.96.2 把更新源改成了 CNB/GitCode/Gitee，点一键更新会装官方原版，直接覆盖本仓库改动 |
+> | 6 | **恢复站点配置模板版本号机制**（`.conf-schema` + `confSchemaVersion=5`） | `internal/websites/websites.go`<br>`internal/app/app.go` | 上游每次启动 10 秒后无条件重写全部 `site_*.conf`，手工调过的站点配置下次重启就没了 |
 >
 > ## 上游已迁出 GitHub
 >
@@ -23,8 +25,11 @@
 > | GitCode | https://gitcode.com/NEXAB/kunpanel | 第 2 源（Release API 按时间升序返回，取首条会拿到旧版） |
 > | Gitee | https://gitee.com/NEXAB/kunpanel | 第 3 源，API 最完整 |
 >
-> ⚠️ **面板自带的「一键更新」按 CNB → GitCode → Gitee 三源回退取包，与本仓库无关**。
-> 在面板里执行一键更新会用官方原版覆盖本仓库的 4 处改动，需要重新编译。
+> ⚠️ **面板自带的「一键更新」已改为只认本仓库 GitHub Releases**（v2.96.3 起），点它会装本仓库的包，不会再覆盖定制。上游出新版时面板**不会提示**，需手工对照：
+>
+> ```bash
+> git ls-remote --tags https://gitee.com/NEXAB/kunpanel.git | tail -3
+> ```
 >
 > ## 构建
 >
@@ -32,7 +37,7 @@
 >
 > ```bash
 > CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
->   -ldflags "-s -w -X main.version=v2.96.2" -o kunpanel .
+>   -ldflags "-s -w -X main.version=v2.96.3" -o kunpanel .
 > ```
 >
 > 推 `v*` 标签会触发 `.github/workflows/release.yml` 自动出全套安装包并建 Release，
