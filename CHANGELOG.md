@@ -4,6 +4,29 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 
+## [v2.96.7] - 2026-10-27
+
+### 变更:应用商店移除 4 个失效应用(坤发卡 / 坤支付 / 坤影CMS / NAT Cloud)
+
+v2.96.4~v2.96.6 尝试「能救则救」后放弃,改为全部下架:
+
+- **坤支付**:gitee 源确实可用,但仓库不发布预构建镜像,compose 用
+  `build: https://gitee.com/NEXAB/kunpay.git` 远程上下文构建,首装 2~5 分钟且随时
+  可能被 Docker Hub 429 限流打断;原 `kungec/kunpay` 镜像已随命名空间清空
+- **坤发卡**:源码可从 CNB 取(见 v2.96.6),但首装要本地 `docker build` 3~6 分钟,
+  同样受 Docker Hub 429 影响;原 `kungec/kunfaka` 镜像已下架
+- **坤影CMS / NAT Cloud**:作者新账号下无对应仓库,原地址 404
+
+以上 4 个应用的条目、`Install()` 分派、`installKunfaka()` / `installKunyingCMS()` /
+`installNatCloud()` / `p1ShTmp()` / `downloadFile()` 全部删除,清理失效 import
+(`net/http`、`os/exec`)。应用商店模板由 24 个减为 **20 个**,其余 20 个应用
+（nginx / openresty / php / mysql / mariadb / postgresql / phpmyadmin / redis /
+wordpress / portainer / uptime-kuma / memos / it-tools / npm / caddy / python /
+nodejs / golang / apache / vsftpd）镜像与源全部实测可用,不受影响。
+
+> v2.96.6 的「坤发卡源码包解压兼容无顶层目录」修复随本次下架一并作废,
+> 该版本未打 tag、未发布。
+
 ## [v2.96.5] - 2026-10-27
 
 ### 修复:坤发卡源码包改从 CNB 下载（v2.96.4 的 gitee 地址不可用）

@@ -2,7 +2,7 @@
 
 > # 📌 本仓库说明 · ttbb1211 定制构建
 >
-> 基于上游 **坤面板 v2.96.2** 的个人定制版。版本号在上游基础上**递增 patch**（本仓库发版取「上游最新 / 本仓库最新」较大者 +1，当前 v2.96.6），产物额外含下列 7 处改动。
+> 基于上游 **坤面板 v2.96.2** 的个人定制版。版本号在上游基础上**递增 patch**（本仓库发版取「上游最新 / 本仓库最新」较大者 +1，当前 v2.96.7），产物额外含下列 7 处改动。
 >
 > ## 相对上游的改动（仅此 7 处）
 >
@@ -14,7 +14,7 @@
 > | 4 | 退出重登后脏 hash 回落概览 | `web/static/app.js` | 停在 `#/login` 会让顶栏监控与概览页定时器双倍轮询，页面卡在骨架屏 |
 > | 5 | **一键更新只认本仓库**：`sources` 只留 GitHub，上游三源降为 `upstreamSources`（仅人工对照，不参与安装） | `internal/panelupdate/sources.go`<br>`scripts/install.sh` | 上游 v2.96.2 把更新源改成了 CNB/GitCode/Gitee，点一键更新会装官方原版，直接覆盖本仓库改动 |
 > | 6 | **恢复站点配置模板版本号机制**（`.conf-schema` + `confSchemaVersion=5`） | `internal/websites/websites.go`<br>`internal/app/app.go` | 上游每次启动 10 秒后无条件重写全部 `site_*.conf`，手工调过的站点配置下次重启就没了 |
-> | 7 | **应用商店失效源修复**：坤支付 build 换 gitee、坤发卡改源码构建、下架坤影CMS 与 NAT Cloud | `internal/appstore/appstore.go` | 作者撤出 GitHub + 清空 Docker Hub 后，这 4 个应用的原地址全 404；前两个有 gitee 新家可救，后两个仓库已不存在 |
+> | 7 | **应用商店移除 4 个失效应用**：坤发卡 / 坤支付 / 坤影CMS / NAT Cloud | `internal/appstore/appstore.go` | 作者撤出 GitHub + 清空 Docker Hub 后，这 4 个应用的源地址全 404。坤支付虽在 gitee 有镜像、坤发卡虽可从 CNB 取源码，但两者均无预构建镜像（首装要本地 build 3~6 分钟、受 Docker Hub 429 限流影响），且原 `kunfaka` 镜像已从 Docker Hub 下架 ⇒ 一并下架，商店模板由 24 个减为 **20 个** |
 >
 > ## 上游已迁出 GitHub
 >
@@ -38,7 +38,7 @@
 >
 > ```bash
 > CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
->   -ldflags "-s -w -X main.version=v2.96.6" -o kunpanel .
+>   -ldflags "-s -w -X main.version=v2.96.7" -o kunpanel .
 > ```
 >
 > 推 `v*` 标签会触发 `.github/workflows/release.yml` 自动出全套安装包并建 Release，

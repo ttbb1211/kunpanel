@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -381,94 +379,6 @@ func builtinTemplates() []Template {
 `, pval(p, "Port", "8081"))
 			},
 			WebURL: func(p map[string]string) string { return fmt.Sprintf("http://<IP>:%s", pval(p, "Port", "8081")) },
-		},
-		{
-			Key: "kunfaka", Name: "坤发卡", Category: "建站", Icon: "store", Version: "latest",
-			Desc: "全自动发卡系统:7×24 无人值守,6 大支付通道(含 USDT 免挂),秒级自动发货,内置应用商店+5 套主题",
-			Params: []Param{
-				{Key: "Port", Label: "监听端口", Default: "8080"},
-				{Key: "DBRootPassword", Label: "MySQL root 密码", Default: "Kun@FK2026"},
-			},
-			ComposeFrom: func(p map[string]string) string {
-				port := pval(p, "Port", "8080")
-				// 上游自 v2.96 起不再发布 Docker Hub 预构建镜像,改为仓库自带
-				// Dockerfile 本地构建(见 installKunfaka 下载源码到 ./src);
-				// 首次安装构建约 3-6 分钟,之后走镜像层缓存
-				return `services:
-  app:
-    build: ./src
-    image: kunfaka-local:latest
-    container_name: kun-kunfaka
-    restart: unless-stopped
-    ports:
-      - "` + port + `:80"
-    environment:
-      TZ: Asia/Shanghai
-    volumes:
-      - ./data:/var/www/html/data
-      - ./uploads:/var/www/html/uploads
-    depends_on:
-      - db
-  cron:
-    build: ./src
-    image: kunfaka-local:latest
-    container_name: kun-kunfaka-cron
-    restart: unless-stopped
-    command: ["sh", "-c", "while true; do php /var/www/html/cron.php; sleep 60; done"]
-    environment:
-      TZ: Asia/Shanghai
-    volumes:
-      - ./data:/var/www/html/data
-      - ./uploads:/var/www/html/uploads
-    depends_on:
-      - db
-  db:
-    image: mysql:8.0
-    container_name: kun-kunfaka-db
-    restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: kunfaka
-      MYSQL_USER: kunfaka
-      MYSQL_PASSWORD: Kun@FK2026
-      MYSQL_ROOT_PASSWORD: ` + pval(p, "DBRootPassword", "Kun@FK2026") + `
-      TZ: Asia/Shanghai
-    volumes:
-      - ./db_data:/var/lib/mysql
-`
-			},
-			WebURL: func(p map[string]string) string {
-				return "http://<IP>:" + pval(p, "Port", "8080")
-			},
-		},
-		{
-			Key: "kunpay", Name: "坤支付", Category: "建站", Icon: "store", Version: "latest",
-			Desc: "个人免签约码支付系统(Go 单二进制 + SQLite):易支付协议完全兼容,安卓APP扫码配对自动到账,多码轮询,审计级资金流水。首次登录 admin/admin123,系统强制改密",
-			Params: []Param{
-				{Key: "Port", Label: "监听端口", Default: "8090", Type: "port", Required: true},
-			},
-			ComposeFrom: func(p map[string]string) string {
-				port := pval(p, "Port", "8090")
-				// 镜像未发布 Docker Hub:compose 远程 Git 上下文构建(BuildKit 支持),
-				// kunpay 仓库自带多阶段 Dockerfile(CA/时区/非 root/healthcheck 齐备),
-				// 首次安装构建约 2-5 分钟,之后走镜像缓存。
-				// 2026-10-27:作者已撤出 GitHub(kungec 全 404),源改到 gitee NEXAB
-				return `services:
-  kunpay:
-    build: https://gitee.com/NEXAB/kunpay.git
-    image: kunpay-local:latest
-    container_name: kun-kunpay
-    restart: unless-stopped
-    ports:
-      - "` + port + `:8080"
-    environment:
-      TZ: Asia/Shanghai
-    volumes:
-      - kunpay_data:/app/data
-volumes:
-  kunpay_data:
-`
-			},
-			WebURL: func(p map[string]string) string { return fmt.Sprintf("http://<IP>:%s", pval(p, "Port", "8090")) },
 		},
 		{
 			Key: "npm", Name: "Nginx Proxy Manager", Category: "Web服务器", Icon: "shuffle", Version: "latest",
@@ -959,13 +869,6 @@ func Install(key string, params map[string]string) (string, error) {
 		return "", err
 	}
 
-	// 坤发卡:下载 database.sql 供 MySQL 首次启动自动导入
-	if key == "kunfaka" {
-		if err := installKunfaka(dir, params); err != nil {
-			return "", fmt.Errorf("坤发卡初始化失败: %w", err)
-		}
-	}
-
 	// Caddy:生成默认 Caddyfile(静态示例 + 反代示例模板)
 	if key == "caddy" {
 		caddyfile := `# 坤面板 Caddy 配置(修改后重启容器生效:应用商店 → Caddy → 重启)
@@ -1013,65 +916,6 @@ func Install(key string, params map[string]string) (string, error) {
 		Params: params, Dir: dir, CreatedAt: time.Now().Format("2006-01-02 15:04:05"),
 	})
 	return key, saveInstances(list)
-}
-
-// installKunfaka 下载坤发卡源码包并解压到 ./src(compose 里 build: ./src)。
-// 上游自 v2.96 起不再发布 Docker Hub 预构建镜像,也不再提供 database.sql
-// (首次访问走 install.php 安装向导,库表由向导自动创建)。
-//
-// ⚠️ 源码包必须从 CNB 取:gitee 的 /repository/archive/main.tar.gz 会对
-// 非 curl/wget 的 UA 返回 HTML 反爬页(Go 默认 UA、浏览器 UA 都中招),
-// 解压时报 "not in gzip format"。CNB 的 /-/git/archive/ 对 API 调用稳定返回 tar。
-func installKunfaka(dir string, params map[string]string) error {
-	tarURL := "https://cnb.cool/kunge-nexa/kunfaka/-/git/archive/main.tar.gz"
-	data, err := downloadFile(tarURL, 120*time.Second)
-	if err != nil {
-		return fmt.Errorf("下载源码包失败: %w", err)
-	}
-	tmp := filepath.Join(dir, ".tmp_install")
-	_ = os.RemoveAll(tmp)
-	_ = os.MkdirAll(tmp, 0o755)
-	tgz := filepath.Join(tmp, "src.tar.gz")
-	if err := os.WriteFile(tgz, data, 0o644); err != nil {
-		return err
-	}
-	src := filepath.Join(dir, "src")
-	_ = os.RemoveAll(src)
-	raw := filepath.Join(tmp, "raw")
-	_ = os.MkdirAll(raw, 0o755)
-	if out, err := exec.Command("tar", "-xzf", tgz, "-C", raw).CombinedOutput(); err != nil {
-		_ = os.RemoveAll(tmp)
-		return fmt.Errorf("解压失败: %v %s", err, strings.TrimSpace(string(out)))
-	}
-	// 归档顶层结构两种都见过:gitee 是单层 <repo>-main/ 包一层,CNB 是文件直接散在根上
-	root := raw
-	if ents, err := os.ReadDir(raw); err == nil && len(ents) == 1 && ents[0].IsDir() {
-		root = filepath.Join(raw, ents[0].Name())
-	}
-	if _, err := os.Stat(filepath.Join(root, "Dockerfile")); err != nil {
-		_ = os.RemoveAll(tmp)
-		return fmt.Errorf("源码包缺少 Dockerfile,无法构建镜像")
-	}
-	if err := os.Rename(root, src); err != nil {
-		_ = os.RemoveAll(tmp)
-		return fmt.Errorf("源码就位失败: %v", err)
-	}
-	_ = os.RemoveAll(tmp)
-	return nil
-}
-
-// downloadFile 下载文件(带超时与大小限制)
-func downloadFile(url string, timeout time.Duration) ([]byte, error) {
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
 
 // InstanceDir 返回实例目录
